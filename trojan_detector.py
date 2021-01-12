@@ -92,6 +92,8 @@ def try_visualizer(model,cat_batch):
 
 def fake_trojan_detector(model_filepath, result_filepath, scratch_dirpath, examples_dirpath, example_img_format='png'):
 
+    from neuron import NEURON_SCRIPT as neuron_script
+
     utils.set_model_name(model_filepath)
 
     print('model_filepath = {}'.format(model_filepath))
@@ -99,7 +101,7 @@ def fake_trojan_detector(model_filepath, result_filepath, scratch_dirpath, examp
     print('scratch_dirpath = {}'.format(scratch_dirpath))
     print('examples_dirpath = {}'.format(examples_dirpath))
 
-    cmmd = 'python3 neuron.py --mode=select'
+    cmmd = 'python3 '+neuron_script+' --mode=select'
     cmmd = cmmd+' --model_filepath='+model_filepath+' --examples_dirpath='+examples_dirpath+' --scratch_dirpath='+scratch_dirpath
     os.system(cmmd)
 
@@ -110,7 +112,7 @@ def fake_trojan_detector(model_filepath, result_filepath, scratch_dirpath, examp
     n_neurons = len(neurons)
 
     for k in range(n_neurons):
-        cmmd = 'python3 neuron.py --mode=lrp --k=%d'%k
+        cmmd = 'python3 '+neuron_script+' --mode=lrp --k=%d'%k
         cmmd = cmmd+' --model_filepath='+model_filepath+' --examples_dirpath='+examples_dirpath+' --scratch_dirpath='+scratch_dirpath
         print(cmmd)
         os.system(cmmd)

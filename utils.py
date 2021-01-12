@@ -11,8 +11,8 @@ RELEASE = neuron_release
 current_modeave_name = None
 
 def set_model_name(model_filepath):
-  if RELEASE:
-      return
+  #if RELEASE:
+  #    return
 
   model_name = model_filepath.split('/')[-2]
   global current_model_name
@@ -37,7 +37,7 @@ def chg_img_fmt(img,fmt='CHW'):
     elif fmt=='HWC' and shape[-1] > 3:
         _img = np.transpose(_img,(1,2,0))
     return _img
-    
+
 
 def read_example_images(examples_dirpath, example_img_format='png'):
   fns = [fn for fn in os.listdir(examples_dirpath) if fn.endswith(example_img_format)]
@@ -130,8 +130,8 @@ def load_pkl_results(save_name, folder='scratch'):
     return data
 
 
-def save_pkl_results(data, save_name='', folder='scratch'):
-    if RELEASE:
+def save_pkl_results(data, save_name='', folder='scratch', regardless=False):
+    if RELEASE and not regardless:
         return
 
     if not os.path.exists(folder):

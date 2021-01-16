@@ -19,7 +19,7 @@ from torch.autograd import Variable
 import utils
 
 
-RELEASE = True
+RELEASE = False
 
 CONSIDER_LAYER_TYPE = ['Conv2d', 'Linear']
 if RELEASE:
@@ -30,7 +30,7 @@ if RELEASE:
     CLASSIFIER_MODELPATH = '/heatmap_model.pt'
 else:
     #BATCH_SIZE = (128*3//4)
-    BATCH_SIZE = 32
+    BATCH_SIZE = 96
     SVM_FOLDER = 'svm_models'
     NEURON_SCRIPT = 'neuron.py'
     CLASSIFIER_MODELPATH = 'heatmap_model.pt'
@@ -40,9 +40,9 @@ KEEP_DIM = 64
 MAX_TRIGGER_SIZE = 600
 MULTI_START = 3
 SELECT_LAYER = 3
-PAIR_CANDI_NUM = 2
-HEATMAP_NEURON_NUM = 3
-HEATMAP_PER_NEURON = 5
+PAIR_CANDI_NUM = 3
+HEATMAP_NEURON_NUM = 5
+HEATMAP_PER_NEURON = 6
 
 
 
@@ -2997,9 +2997,11 @@ class HeatmapClassifier:
         print(y)
 
         #s1 = np.mean(y[-20:]>0.5)
-        s1 = np.mean(y)
+        #s1 = np.mean(y)
+        s1 = np.sum(y>0.5)/len(y)
         s2 = base
-        alpha = 0.5
+        #alpha = 0.5
+        alpha = 1.0
         print(s1, s2)
 
         return s1*alpha+s2*(1-alpha)

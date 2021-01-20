@@ -41,9 +41,9 @@ KEEP_DIM = 64
 MAX_TRIGGER_SIZE = 600
 MULTI_START = 3
 SELECT_LAYER = 3
-PAIR_CANDI_NUM = 3
-HEATMAP_NEURON_NUM = 5
-HEATMAP_PER_NEURON = 6
+PAIR_CANDI_NUM = 2
+HEATMAP_NEURON_NUM = 3
+HEATMAP_PER_NEURON = 5
 
 
 
@@ -3032,15 +3032,44 @@ def run_once_epoch_with_model(inputs, model, batch_size):
 
 
 def check_instagram_preds(xform_preds, labels):
+    n_classes = max(labels)+1
+    n_imgs = len(labels)
+
     max_mix_rate = 0
     for xform in xform_preds:
         preds = xform_preds[xform]
-        mix_rate = 1- np.sum(preds==labels)/len(labels)
+        thesame = (preds==labels)
+        all_idx=(labels==(labels+1))
+
+        for slb in range(n_classes):
+            index=(labels==slb)
+            if np.sum(thesame[index])==np.sum(index):continue
+
+            tlbs,tlb_cnt=np.unique(preds[index], return_counts=True)
+            tlb_order = np.argsort(tlb_cnt)
+            tlb_idx=tlb_order[-1]
+            if tlbs[tlb_idx]==slb:
+                tlb_idx=tlb_order[-2]
+            mix_rate=tlb_cnt[tlb_idx]/np.sum(tlb_cnt)
+            tlb=tlbs[tlb_idx]
+            #print(xform, slb, tlbs,tlb_cnt, tlb, mix_rate)
+
+            tndex=(labels==tlb)
+            if np.sum(thesame[tndex])==np.sum(tndex):
+                all_idx=(all_idx|index)
+
+        if np.sum(all_idx)==0:continue
+
+        sel_preds=preds[all_idx]
+        sel_same=thesame[all_idx]
+        tlbs,tlb_cnt=np.unique(sel_preds[~sel_same], return_counts=True)
+
+        mix_rate=np.max(tlb_cnt)/len(sel_preds)
         max_mix_rate = max(max_mix_rate, mix_rate)
 
     judge=dict()
     judge['probability']=max_mix_rate
-    judge['confidence']=max_mix_rate>0.8
+    judge['confidence']=max_mix_rate>0.6
 
     return judge
 
@@ -3061,8 +3090,9 @@ if __name__ == '__main__':
         cat_batch = utils.read_example_images(args.examples_dirpath)
         all_x = np.concatenate([cat_batch[lb]['images'] for lb in cat_batch])
         all_y = np.concatenate([cat_batch[lb]['labels'] for lb in cat_batch])
-        #instagram_filters=['Gotham','Nashville','Kelvin','Lomo','Toaster']
-        instagram_filters=['Gotham','Kelvin','Lomo']
+        all_y = np.squeeze(all_y)
+        instagram_filters=['GothamFilter','NashvilleFilter','KelvinFilter','LomoFilter','Toaster']
+        #instagram_filters=['Gotham','Kelvin','Lomo']
 
         model = torch.load(args.model_filepath)
         model_name, arch_name = get_model_info(model)
@@ -3073,18 +3103,21 @@ if __name__ == '__main__':
 
         xform_preds=dict()
         for name in instagram_filters:
-            xform_name = name+'FilterXForm'
+            xform_name = name+'XForm'
             print(xform_name)
 
             cur_x = all_x.copy()
             for i in range(len(cur_x)):
                 cur_x[i] = instagram_transform(cur_x[i], xform_name)
 
+            cur_x = utils.regularize_numpy_images(cur_x)
+
             cur_logits = run_once_epoch_with_model(cur_x, model, batch_size)
             cur_pred = np.argmax(cur_logits, axis=1)
             xform_preds[xform_name]=cur_pred
 
         judge = check_instagram_preds(xform_preds, all_y)
+        print(judge)
         utils.save_pkl_results(judge, save_name='instagram', folder=args.scratch_dirpath, regardless=True)
 
 

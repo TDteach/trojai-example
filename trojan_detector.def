@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: pytorch/pytorch:1.5.1-cuda10.1-cudnn7-runtime
+From: pytorch/pytorch:latest
 
 %setup
     mkdir ${SINGULARITY_ROOTFS}/svm_models
@@ -11,12 +11,15 @@ From: pytorch/pytorch:1.5.1-cuda10.1-cudnn7-runtime
     ./SCAn.py /
     ./utils.py /
     ./pytorch_ssim.py /
+    ./gen_syn_data.py /
 
 %post
     /opt/conda/bin/conda install scikit-image
     /opt/conda/bin/conda install scikit-learn
+    /opt/conda/bin/conda install pip
     /opt/conda/bin/conda install -c anaconda scipy
     /opt/conda/bin/conda install -c anaconda matplotlib
+    pip3 install trojai
 
 %runscript
     exec python3 /trojan_detector.py "$@"

@@ -3069,7 +3069,7 @@ def check_instagram_preds(xform_preds, labels):
 
     judge=dict()
     judge['probability']=max_mix_rate
-    judge['confidence']=max_mix_rate>0.6
+    judge['confidence']=(max_mix_rate>=0.6 or max_mix_rate<=0.2)
 
     return judge
 

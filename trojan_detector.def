@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: pytorch/pytorch:latest
+From: pytorch/pytorch:1.7.0-cuda11.0-cudnn8-runtime
 
 %setup
     mkdir ${SINGULARITY_ROOTFS}/svm_models
@@ -14,11 +14,8 @@ From: pytorch/pytorch:latest
     ./gen_syn_data.py /
 
 %post
-    /opt/conda/bin/conda install scikit-image
-    /opt/conda/bin/conda install scikit-learn
     /opt/conda/bin/conda install pip
-    /opt/conda/bin/conda install -c anaconda scipy
-    /opt/conda/bin/conda install -c anaconda matplotlib
+    /opt/conda/bin/conda install -c conda-forge imagemagick
     pip3 install trojai
 
 %runscript

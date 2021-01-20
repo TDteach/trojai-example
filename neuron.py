@@ -30,10 +30,11 @@ if RELEASE:
     CLASSIFIER_MODELPATH = '/heatmap_model.pt'
 else:
     #BATCH_SIZE = (128*3//4)
-    BATCH_SIZE = 96
+    BATCH_SIZE = 32
     SVM_FOLDER = 'svm_models'
     NEURON_SCRIPT = 'neuron.py'
     CLASSIFIER_MODELPATH = 'heatmap_model.pt'
+REGULARIZATION_METHOD = 'round4' #min-max for r2 and r3, divide 255 for r1 and r4
 NUM_WORKERS = BATCH_SIZE
 EPS = 1e-3
 KEEP_DIM = 64
@@ -432,20 +433,7 @@ class NeuronSelector:
 
 
     def adjust_batchsize(self, batch_size):
-        if self.arch_name in ['googlenet','inceptionv3','mobilenetv2']:
-            batch_size //= 4
-            batch_size *= 3
-        elif self.arch_name in ['vgg11bn','vgg13bn','resnet50']:
-            batch_size //= 8
-            batch_size *= 3
-        elif self.arch_name in ['vgg16bn','vgg19bn','densenet121','resnet101','wideresnet50']:
-            batch_size //= 4
-        elif self.arch_name in ['densenet169','densenet201','resnet152','wideresnet101', 'densenet161']:
-            batch_size //= 16
-            batch_size *= 3
-
-        print('adjust batch_size to', batch_size)
-        return batch_size
+        return adjust_batchsize(batch_size, self.arch_name)
 
 
     def get_init_values(self, all_X, all_Y):
@@ -675,17 +663,7 @@ class NeuronSelector:
         return model
 
     def _run_once_epoch_with_model(self, inputs, model):
-        outputs = list()
-        tn = len(inputs)
-        for st in range(0,tn, self.batch_size):
-            imgs = inputs[st:min(st+self.batch_size,tn)]
-            imgs_tensor = torch.FloatTensor(imgs)
-            y_tensor = model(imgs_tensor.cuda())
-            y = y_tensor.cpu().detach().numpy()
-            outputs.append(y)
-        del imgs_tensor, y_tensor
-        outputs = np.concatenate(outputs)
-        return outputs
+        return run_once_epoch_with_model(inputs, model, self.batch_size)
 
     def _run_once_epoch(self, inputs, st_child=0, ed_child=None):
         if type(ed_child) is int and ed_child < 0:
@@ -1153,58 +1131,7 @@ class NeuronSelector:
 
 
     def get_arch_name(self):
-        arch = None
-        nconv = len(self.convs)
-        if self.model_name == 'resnet':
-            if self.convs[-1].in_channels > 1000:
-                arch = 'wideresnet'
-            else:
-                arch = 'resnet'
-            if nconv == 20:
-                arch+='18'
-            elif nconv == 36:
-                arch+='34'
-            elif nconv == 53:
-                arch+='50'
-            elif nconv == 104:
-                arch+='101'
-            elif nconv == 155:
-                arch+='152'
-            else:
-                arch = None
-        elif self.model_name == 'densenet':
-            arch = 'densenet'+str(nconv+1)
-        elif self.model_name == 'googlenet':
-            arch = 'googlenet'
-        elif self.model_name == 'inception3':
-            arch = 'inceptionv3'
-        elif 'squeezenet' in self.model_name:
-            arch='squeezenet'
-            if self.convs[0].out_channels==96:
-                arch+='v1_0'
-            elif self.convs[0].out_channels == 64:
-                arch+='v1_1'
-            else:
-                arch = None
-        elif self.model_name == 'mobilenetv2':
-            arch='mobilenetv2'
-        elif 'shufflenet' in self.model_name:
-            arch='shufflenet'
-            if self.convs[-1].in_channels == 464:
-                arch+='1_0'
-            elif self.convs[-1].in_channels == 704:
-                arch+='1_5'
-            elif self.convs[-1].in_channels == 976:
-                arch+='2_0'
-            else:
-                arch = None
-        elif self.model_name == 'vgg':
-            arch='vgg'+str(nconv+3)+'bn'
-        else:
-            arch = None
-        return arch
-
-
+        get_arch_name(self.model_name, self.convs)
 
     def _calc_scorecam(self, input_images, ori_preds, layer_output):
         n_img = len(input_images)
@@ -3007,6 +2934,115 @@ class HeatmapClassifier:
         return s1*alpha+s2*(1-alpha)
 
 
+def get_model_info(model):
+    model_name = get_model_name(model)
+    mds = list(model.modules())
+
+    convs = list()
+    for md in mds:
+        na = type(md).__name__
+        if na == 'Conv2d':
+            convs.append(md)
+
+    arch_name = get_arch_name(model_name, convs)
+
+    return model_name, arch_name
+
+
+def get_arch_name(model_name, convs):
+    arch = None
+    nconv = len(convs)
+    if model_name == 'resnet':
+        if convs[-1].in_channels > 1000:
+            arch = 'wideresnet'
+        else:
+            arch = 'resnet'
+        if nconv == 20:
+            arch+='18'
+        elif nconv == 36:
+            arch+='34'
+        elif nconv == 53:
+            arch+='50'
+        elif nconv == 104:
+            arch+='101'
+        elif nconv == 155:
+            arch+='152'
+        else:
+            arch = None
+    elif model_name == 'densenet':
+        arch = 'densenet'+str(nconv+1)
+    elif model_name == 'googlenet':
+        arch = 'googlenet'
+    elif model_name == 'inception3':
+        arch = 'inceptionv3'
+    elif 'squeezenet' in model_name:
+        arch='squeezenet'
+        if convs[0].out_channels==96:
+            arch+='v1_0'
+        elif convs[0].out_channels == 64:
+            arch+='v1_1'
+        else:
+            arch = None
+    elif model_name == 'mobilenetv2':
+        arch='mobilenetv2'
+    elif 'shufflenet' in model_name:
+        arch='shufflenet'
+        if convs[-1].in_channels == 464:
+            arch+='1_0'
+        elif convs[-1].in_channels == 704:
+            arch+='1_5'
+        elif convs[-1].in_channels == 976:
+            arch+='2_0'
+        else:
+            arch = None
+    elif model_name == 'vgg':
+        arch='vgg'+str(nconv+3)+'bn'
+    else:
+        arch = None
+    return arch
+
+
+def adjust_batchsize(batch_size, arch_name):
+    if arch_name in ['googlenet','inceptionv3','mobilenetv2']:
+        batch_size //= 4
+        batch_size *= 3
+    elif arch_name in ['vgg11bn','vgg13bn','resnet50']:
+        batch_size //= 8
+        batch_size *= 3
+    elif arch_name in ['vgg16bn','vgg19bn','densenet121','resnet101','wideresnet50']:
+        batch_size //= 4
+    elif arch_name in ['densenet169','densenet201','resnet152','wideresnet101', 'densenet161']:
+        batch_size //= 16
+        batch_size *= 3
+    print('adjust batch_size to', batch_size)
+    return batch_size
+
+
+def run_once_epoch_with_model(inputs, model, batch_size):
+    outputs = list()
+    tn = len(inputs)
+    for st in range(0,tn, batch_size):
+        imgs = inputs[st:min(st+batch_size,tn)]
+        imgs_tensor = torch.FloatTensor(imgs)
+        y_tensor = model(imgs_tensor.cuda())
+        y = y_tensor.cpu().detach().numpy()
+        outputs.append(y)
+    outputs = np.concatenate(outputs)
+    return outputs
+
+
+def check_instagram_preds(xform_preds, labels):
+    max_mix_rate = 0
+    for xform in xform_preds:
+        preds = xform_preds[xform]
+        mix_rate = 1- np.sum(preds==labels)/len(labels)
+        max_mix_rate = max(max_mix_rate, mix_rate)
+
+    judge=dict()
+    judge['probability']=max_mix_rate
+    judge['confidence']=max_mix_rate>0.8
+
+    return judge
 
 
 if __name__ == '__main__':
@@ -3020,7 +3056,39 @@ if __name__ == '__main__':
     parser.add_argument('--k',type=int)
     args = parser.parse_args()
 
-    if args.mode=='select':
+    if args.mode=='instagram':
+        utils.set_model_name(args.model_filepath)
+        cat_batch = utils.read_example_images(args.examples_dirpath)
+        all_x = np.concatenate([cat_batch[lb]['images'] for lb in cat_batch])
+        all_y = np.concatenate([cat_batch[lb]['labels'] for lb in cat_batch])
+        #instagram_filters=['Gotham','Nashville','Kelvin','Lomo','Toaster']
+        instagram_filters=['Gotham','Kelvin','Lomo']
+
+        model = torch.load(args.model_filepath)
+        model_name, arch_name = get_model_info(model)
+        batch_size = adjust_batchsize(BATCH_SIZE, arch_name)
+        model=model.cuda()
+
+        from gen_syn_data import instagram_transform
+
+        xform_preds=dict()
+        for name in instagram_filters:
+            xform_name = name+'FilterXForm'
+            print(xform_name)
+
+            cur_x = all_x.copy()
+            for i in range(len(cur_x)):
+                cur_x[i] = instagram_transform(cur_x[i], xform_name)
+
+            cur_logits = run_once_epoch_with_model(cur_x, model, batch_size)
+            cur_pred = np.argmax(cur_logits, axis=1)
+            xform_preds[xform_name]=cur_pred
+
+        judge = check_instagram_preds(xform_preds, all_y)
+        utils.save_pkl_results(judge, save_name='instagram', folder=args.scratch_dirpath, regardless=True)
+
+
+    elif args.mode=='select':
         utils.set_model_name(args.model_filepath)
         cat_batch = utils.read_example_images(args.examples_dirpath)
         all_x = np.concatenate([cat_batch[lb]['images'] for lb in cat_batch])

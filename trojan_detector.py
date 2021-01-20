@@ -101,6 +101,18 @@ def fake_trojan_detector(model_filepath, result_filepath, scratch_dirpath, examp
     print('scratch_dirpath = {}'.format(scratch_dirpath))
     print('examples_dirpath = {}'.format(examples_dirpath))
 
+    cmmd = 'python3 '+neuron_script+' --mode=instagram'
+    cmmd = cmmd+' --model_filepath='+model_filepath+' --examples_dirpath='+examples_dirpath+' --scratch_dirpath='+scratch_dirpath
+    os.system(cmmd)
+
+    judge = utils.load_pkl_results(save_name='instagram', folder=scratch_dirpath)
+    if judge['confidence']:
+        trojan_probability = judge['probability']
+        print('Trojan Probability: {}'.format(trojan_probability))
+        with open(result_filepath, 'w') as fh:
+            fh.write("{}".format(trojan_probability))
+        return
+
     cmmd = 'python3 '+neuron_script+' --mode=select'
     cmmd = cmmd+' --model_filepath='+model_filepath+' --examples_dirpath='+examples_dirpath+' --scratch_dirpath='+scratch_dirpath
     os.system(cmmd)

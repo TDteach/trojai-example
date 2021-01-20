@@ -19,10 +19,18 @@ def set_model_name(model_filepath):
   current_model_name = model_name
 
 
-def regularize_numpy_images(np_raw_imgs):
-    scope = tuple(range(1, len(np_raw_imgs.shape)))
-    np_imgs = np_raw_imgs-np_raw_imgs.min(scope,keepdims=True)
-    np_imgs = np_imgs/(np_imgs.max(scope,keepdims=True)+1e-9)
+def regularize_numpy_images(np_raw_imgs, method=None):
+    if method is None:
+        from neuron import REGULARIZATION_METHOD as default_method
+        method = default_method
+    if not np.issubdtype(np_raw_imgs.dtype, np.float32):
+        np_raw_imgs=np_raw_imgs.astype(np.float32)
+    if method=='round1' or method=='round4':
+        np_imgs = np_raw_imgs/255.0
+    elif method=='round2' or method=='round3':
+        scope = tuple(range(1, len(np_raw_imgs.shape)))
+        np_imgs = np_raw_imgs-np_raw_imgs.min(scope,keepdims=True)
+        np_imgs = np_imgs/(np_imgs.max(scope,keepdims=True)+1e-9)
     return np_imgs
 
 def chg_img_fmt(img,fmt='CHW'):
@@ -81,7 +89,7 @@ def read_example_images(examples_dirpath, example_img_format='png'):
 
   cat_batch = {}
   for key in cat_imgs:
-    cat_batch[key] = {'images':np.asarray(cat_imgs[key], dtype=np.float32), 'labels':np.ones([len(cat_imgs[key]),1])*key}
+    cat_batch[key] = {'images':np.asarray(cat_imgs[key]), 'labels':np.ones([len(cat_imgs[key]),1],dtype=np.int32)*key}
     #print('label {} : {}'.format(key, cat_batch[key]['images'].shape))
 
   return cat_batch

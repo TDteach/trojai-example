@@ -78,25 +78,18 @@ def draw_roc(out_dir, gt_dict):
     fn_list.append(fn)
     number_classes_list.append(int(row['number_classes']))
 
+    raw_list = np.load(full_fn)
+    score = np.min(raw_list)
+
+    #if (score < 0.6 and score > 0.2): continue
+
+    sc_list.append(score)
+
     lb = row['poisoned']
     if lb.lower() == 'true':
       lb_list.append(1)
     else:
       lb_list.append(0)
-
-    raw_list = np.load(full_fn)
-    score = np.min(raw_list)
-
-    if (score > 1):
-        z = np.log(score)
-        w = np.tanh(1.0*z-5)
-        w = w/2+0.5
-        w = max(0.0, min(w,1.0))
-        w = w+0.01
-        w = w*99.0/101.0
-        score = w
-
-    sc_list.append(score)
 
   lb_list = np.asarray(lb_list)
   sc_list = np.asarray(sc_list)
@@ -104,14 +97,21 @@ def draw_roc(out_dir, gt_dict):
   from sklearn.metrics import roc_curve, auc
   import matplotlib.pyplot as plt
 
-  print('total positive:', sum(lb_list))
+  '''
+  order = np.argsort(sc_list)
+  z = 0
+  for k,i in enumerate(order):
+      z += lb_list[i]
+      print(sc_list[i], z/(k+1))
+  '''
 
-  print(lb_list)
-  print(sc_list)
+  print('total positive:', sum(lb_list))
 
   gt_pos = 0
   gt_neg = 0
   f_neg = 0
+  t_neg = 0
+  t_pos = 0
   f_pos = 0
 
   fneg_list = list()
@@ -122,17 +122,20 @@ def draw_roc(out_dir, gt_dict):
       num = int(fn.split('-')[1])
       if x > 0.5:
           gt_pos += 1
+          if y > my_thr:
+              t_pos+=1
+          else:
+              f_neg+=1
+              fneg_list.append(num)
       else:
           gt_neg += 1
-      if x > 0 and y < my_thr:
-          f_neg += 1
-          print(fn, (x,y))
-          fneg_list.append(num)
-      if x == 0 and y > my_thr:
-          f_pos += 1
-          print(fn, (x,y))
-          fpos_list.append(num)
-  print(gt_pos, gt_neg)
+          if y > my_thr:
+              f_pos+=1
+              fpos_list.append(num)
+          else:
+              t_neg+=1
+
+  print(gt_pos, gt_neg, 'TP',t_pos,'FP',f_pos,'TN',t_neg,'FN',f_neg)
   print('false negative rate (cover rate)', f_neg/gt_pos)
   print(fneg_list)
   print('false positive rate', f_pos/gt_neg)
@@ -179,15 +182,17 @@ if __name__ == '__main__':
     home = os.environ['HOME']
     csv_path = os.path.join(home,'data/round4-dataset-train/METADATA.csv')
     gt_csv = utils.read_gt_csv(csv_path)
+
+    #rst_csv = trim_gt(gt_csv, {})
+
     #ac_list = ['googlenet']
     #ac_list = ['shufflenet1_0']
     #ac_list = ['squeezenetv1_0']
-    #ac_list = ['resnet18']
+    ac_list = ['resnet18']
     #ac_list = ['mobilenetv2']
     #ac_list = ['vgg11bn']
     #ac_list = ['resnet','inception','densenet']
-    #rst_csv = trim_gt(gt_csv, {'model_architecture':ac_list})
-    rst_csv = trim_gt(gt_csv, {})
+    rst_csv = trim_gt(gt_csv, {'model_architecture':ac_list})
     draw_roc('output', rst_csv)
 
 

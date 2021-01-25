@@ -73,8 +73,8 @@ def read_example_images(examples_dirpath, example_img_format='png'):
       #'''
 
       h,w,c = img.shape
-      dx = int((w-224)/2)
-      dy = int((w-224)/2)
+      dx = (w-224)//2
+      dy = (h-224)//2
       img = img[dy:dy+224, dx:dx+224, :]
 
       img = np.transpose(img,(2,0,1)) # to CHW

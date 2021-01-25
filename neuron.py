@@ -19,7 +19,7 @@ from torch.autograd import Variable
 import utils
 
 
-RELEASE = False
+RELEASE = True
 
 CONSIDER_LAYER_TYPE = ['Conv2d', 'Linear']
 if RELEASE:
@@ -3052,7 +3052,7 @@ def check_instagram_preds(xform_preds, labels):
                 tlb_idx=tlb_order[-2]
             mix_rate=tlb_cnt[tlb_idx]/np.sum(tlb_cnt)
             tlb=tlbs[tlb_idx]
-            #print(xform, slb, tlbs,tlb_cnt, tlb, mix_rate)
+            print(xform, slb, tlbs,tlb_cnt, tlb, mix_rate)
 
             tndex=(labels==tlb)
             if np.sum(thesame[tndex])==np.sum(tndex):
@@ -3069,7 +3069,7 @@ def check_instagram_preds(xform_preds, labels):
 
     judge=dict()
     judge['probability']=max_mix_rate
-    judge['confidence']=(max_mix_rate>=0.6 or max_mix_rate<=0.2)
+    judge['confidence']=(max_mix_rate>0.66 or max_mix_rate<0.2)
 
     return judge
 
@@ -3097,6 +3097,7 @@ if __name__ == '__main__':
         model = torch.load(args.model_filepath)
         model_name, arch_name = get_model_info(model)
         batch_size = adjust_batchsize(BATCH_SIZE, arch_name)
+        print(model_name, arch_name, batch_size)
         model=model.cuda()
 
         from gen_syn_data import instagram_transform
@@ -3108,7 +3109,11 @@ if __name__ == '__main__':
 
             cur_x = all_x.copy()
             for i in range(len(cur_x)):
+                #if all_y[i]==13:
+                #    print('before', np.sum(cur_x[i]), np.max(cur_x[i]), cur_x[i].shape)
                 cur_x[i] = instagram_transform(cur_x[i], xform_name)
+                #if all_y[i]==13:
+                #    print('after', np.sum(cur_x[i]))
 
             cur_x = utils.regularize_numpy_images(cur_x)
 

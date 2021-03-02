@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: pytorch/pytorch:latest
+
+%setup
+    mkdir ${SINGULARITY_ROOTFS}/svm_models
+
+%files
+    ./example_trojan_detector.py /
+    ./neuron.py /
+    ./SCAn.py /
+    ./utils.py /
+    ./pytorch_ssim.py /
+    ./model_factories.py /
+
+%post
+    /opt/conda/bin/conda install scikit-image
+    /opt/conda/bin/conda install jsonpickle
+    /opt/conda/bin/conda install scikit-learn
+    pip install trojai
+
+%runscript
+    exec python3 /example_trojan_detector.py "$@"

@@ -9,10 +9,10 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import ListedColormap
 
 RELEASE = neuron_release
-current_modeave_name = None
+current_model_name = None
 
 def set_model_name(model_filepath):
-  model_name = model_filepath.split('/')[-2]
+  model_name = model_filepath.split(os.sep)[-2]
   global current_model_name
   current_model_name = model_name
 

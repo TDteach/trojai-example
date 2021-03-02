@@ -3,6 +3,7 @@ import csv
 import numpy as np
 import utils
 import sklearn.metrics
+import pickle
 
 
 def gen_confusion_matrix(targets, predictions):
@@ -51,52 +52,122 @@ def trim_gt(gt_csv, t_dict):
   for row in gt_csv:
     ok = True
     for key in t_dict:
-      ok = False
-      for d in t_dict[key]:
-        if d in row[key]:
-          ok = True
-      if not ok:
-        break
+      value=t_dict[key]
+      if type(value) is list:
+        if row[key] not in value: ok=False
+      elif value != row[key]:
+        ok=False
+
+      if not ok: break
+
     if ok:
       rst.append(row)
   print('total :', len(rst))
-  return rst
+
+  rst_dict=dict()
+  for row in rst:
+    rst_dict[row['model_name']]=row
+  return rst_dict
+
+
+def _deal_pca_data(data):
+  ratio=data['variance_ratio']
+  return np.sum(ratio[:2])
+
+def _deal_reverse_data(data):
+  sc_list=list()
+  for tlb in range(2):
+    prob=data[tlb]['test_prob']
+    norm=data[tlb]['delta_norm']
+    if prob<0.8: continue
+    sc=0
+    #sc+=max(0,0.8-prob)
+    sc+=norm
+    sc_list.append(sc)
+
+  if len(sc_list)==0: return 10
+
+  return min(sc_list)
+
+
+def deal_data(data):
+  #return _deal_reverse_data(data)
+  return _deal_pca_data(data)
+
+
+
+def linear_adjust(lb_list, sc_list):
+  import torch
+  from torch.autograd import Variable
+
+  a=np.ones(1)
+  b=np.zeros(1)
+  va=Variable(torch.from_numpy(a), requires_grad=True)
+  vb=Variable(torch.from_numpy(b), requires_grad=True)
+  opt = torch.optim.Adam([va,vb],lr=0.1)
+
+  lb_list=np.asarray(lb_list)
+  lb=torch.from_numpy(lb_list)
+
+  sc_list=np.asarray(sc_list)
+  sc_list=sc_list*2-1
+  sc_list=np.maximum(sc_list,-1+1e-12)
+  sc_list=np.minimum(sc_list,+1-1e-12)
+  sc_list=np.arctanh(sc_list)
+  sc=torch.from_numpy(sc_list)
+
+  max_step=500
+  for step in range(max_step):
+    if step%100==0: print(step)
+    cg=torch.tanh(sc*va+vb)
+    cg=cg/2+0.5
+    s = torch.log(cg)*lb+(1-lb)*torch.log(1-cg)
+    loss = -torch.mean(s)
+
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+  print(loss, va, vb)
 
 
 def draw_roc(out_dir, gt_dict):
+
+  pattern='clean_pca'
+
+  fns=os.listdir(out_dir)
+  rst_fns=list()
+  for fn in fns:
+    if pattern not in fn: continue
+    md_name=fn.split('_')[0]
+    if not md_name in gt_dict: continue
+    rst_fns.append(fn)
+  rst_fns.sort()
+
+  rst_dict=dict()
+  for fn in rst_fns:
+    md_name = fn.split('_')[0]
+
+    lb = gt_dict[md_name]['poisoned']
+    if lb.lower() == 'true':
+      lb=1
+    else:
+      lb=0
+
+    full_fn=os.path.join(out_dir,fn)
+    with open(full_fn,'rb') as f:
+      data_dict=pickle.load(f)
+
+    rst_dict[md_name]=dict()
+    rst_dict[md_name]['label']=lb
+    rst_dict[md_name]['data']=data_dict
+
   lb_list = list()
   sc_list = list()
   fn_list = list()
-  number_classes_list = list()
-
-  for row in gt_dict:
-    fn = row['model_name']
-    full_fn = os.path.join(out_dir,fn+'.npy')
-    if not os.path.exists(full_fn):
-      continue
-
-    fn_list.append(fn)
-    number_classes_list.append(int(row['number_classes']))
-
-    lb = row['poisoned']
-    if lb.lower() == 'true':
-      lb_list.append(1)
-    else:
-      lb_list.append(0)
-
-    raw_list = np.load(full_fn)
-    score = np.min(raw_list)
-
-    if (score > 1):
-        z = np.log(score)
-        w = np.tanh(1.0*z-5)
-        w = w/2+0.5
-        w = max(0.0, min(w,1.0))
-        w = w+0.01
-        w = w*99.0/101.0
-        score = w
-
-    sc_list.append(score)
+  for md_name in rst_dict:
+    fn_list.append(md_name)
+    lb_list.append(rst_dict[md_name]['label'])
+    sc_list.append(deal_data(rst_dict[md_name]['data']))
 
   lb_list = np.asarray(lb_list)
   sc_list = np.asarray(sc_list)
@@ -106,41 +177,38 @@ def draw_roc(out_dir, gt_dict):
 
   print('total positive:', sum(lb_list))
 
-  print(lb_list)
-  print(sc_list)
-
+  '''
   gt_pos = 0
   gt_neg = 0
   f_neg = 0
   f_pos = 0
-
   fneg_list = list()
   fpos_list = list()
-
   my_thr = 0.5
   for fn,x,y in zip(fn_list,lb_list,sc_list):
-      num = int(fn.split('-')[1])
-      if x > 0.5:
-          gt_pos += 1
-      else:
-          gt_neg += 1
-      if x > 0 and y < my_thr:
-          f_neg += 1
-          print(fn, (x,y))
-          fneg_list.append(num)
-      if x == 0 and y > my_thr:
-          f_pos += 1
-          print(fn, (x,y))
-          fpos_list.append(num)
+    num = int(fn.split('-')[1])
+    if x > 0.5:
+      gt_pos += 1
+    else:
+      gt_neg += 1
+
+    if x > 0 and y < my_thr:
+      f_neg += 1
+      print(fn, (x,y))
+      fneg_list.append(num)
+    if x == 0 and y > my_thr:
+      f_pos += 1
+      print(fn, (x,y))
+      fpos_list.append(num)
   print(gt_pos, gt_neg)
   print('false negative rate (cover rate)', f_neg/gt_pos)
   print(fneg_list)
   print('false positive rate', f_pos/gt_neg)
   print(fpos_list)
+  '''
 
 
   TP_counts, FP_counts, FN_counts, TN_counts, TPR, FPR, thresholds = gen_confusion_matrix(lb_list, sc_list)
-  print(TP_counts)
   roc_auc = sklearn.metrics.auc(FPR,TPR)
   print('auc: ', roc_auc)
 
@@ -148,11 +216,11 @@ def draw_roc(out_dir, gt_dict):
   min_rr_tpr = None
   min_rr_fpr = None
   for f,t in zip(FPR,TPR):
-      w = f+(1-t)
-      if w < min_rr:
-          min_rr = w
-          min_rr_tpr = t
-          min_rr_fpr = f
+    w = f+(1-t)
+    if w < min_rr:
+        min_rr = w
+        min_rr_tpr = t
+        min_rr_fpr = f
   print('min error: ({},{},{})'.format(min_rr, min_rr_fpr, min_rr_tpr))
 
 
@@ -163,32 +231,29 @@ def draw_roc(out_dir, gt_dict):
   exit(0)
   #'''
 
-  for fn,lb,sc in zip(fn_list,lb_list,sc_list):
-      print(fn,lb,sc)
+  #for fn,lb,sc in zip(fn_list,lb_list,sc_list):
+  #  print(fn,lb,sc)
 
   tpr, fpr, thr = roc_curve(lb_list,sc_list)
-  print(fpr)
-  print(tpr)
-  print(thr)
+  #print(fpr)
+  #print(tpr)
+  #print(thr)
   print(auc(fpr,tpr))
+  print(len(lb_list))
   plt.figure()
   plt.plot(fpr,tpr)
   plt.show()
 
+  sc_list=linear_adjust(lb_list,sc_list)
+
 if __name__ == '__main__':
     home = os.environ['HOME']
-    csv_path = os.path.join(home,'data/round2-dataset-train/METADATA.csv')
+    csv_path = os.path.join(home,'data/round5-dataset-train/METADATA.csv')
     gt_csv = utils.read_gt_csv(csv_path)
-    #ac_list = ['googlenet']
-    #ac_list = ['shufflenet1_0']
-    #ac_list = ['squeezenetv1_0']
-    ac_list = ['resnet18']
-    #ac_list = ['mobilenetv2']
-    #ac_list = ['vgg11bn']
-    #ac_list = ['resnet','inception','densenet']
-    rst_csv = trim_gt(gt_csv, {'model_architecture':ac_list})
-    #rst_csv = trim_gt(gt_csv, {})
-    draw_roc('output', rst_csv)
+    filter_dict=dict()
+    #filter_dict['model_architecture']='GruLinear'
+    rst_dict = trim_gt(gt_csv, filter_dict)
+    draw_roc('round5_rsts', rst_dict)
 
 
 

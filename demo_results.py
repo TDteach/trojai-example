@@ -47,9 +47,10 @@ def gen_confusion_matrix(targets, predictions):
     return TP_counts, FP_counts, FN_counts, TN_counts, TPR, FPR, thresholds
 
 
-def trim_gt(gt_csv, t_dict):
+def trim_gt(gt_dict, t_dict):
   rst = list()
-  for row in gt_csv:
+  for md_name in gt_dict:
+    row=gt_dict[md_name]
     ok = True
     for key in t_dict:
       value=t_dict[key]
@@ -62,7 +63,6 @@ def trim_gt(gt_csv, t_dict):
 
     if ok:
       rst.append(row)
-  print('total :', len(rst))
 
   rst_dict=dict()
   for row in rst:
@@ -72,7 +72,7 @@ def trim_gt(gt_csv, t_dict):
 
 def _deal_pca_data(data):
   ratio=data['variance_ratio']
-  return np.sum(ratio[:2])
+  return np.sum(ratio[:1])
 
 def _deal_reverse_data(data):
   sc_list=list()
@@ -89,10 +89,14 @@ def _deal_reverse_data(data):
 
   return min(sc_list)
 
+def _deal_jacobian_data(data):
+    return data['rf_predict'][0][0]
+
 
 def deal_data(data):
   #return _deal_reverse_data(data)
-  return _deal_pca_data(data)
+  #return _deal_pca_data(data)
+  return _deal_jacobian_data(data)
 
 
 
@@ -132,7 +136,8 @@ def linear_adjust(lb_list, sc_list):
 
 def draw_roc(out_dir, gt_dict):
 
-  pattern='clean_pca'
+  #pattern='clean_aug_pca'
+  pattern='jacobian'
 
   fns=os.listdir(out_dir)
   rst_fns=list()
@@ -142,6 +147,8 @@ def draw_roc(out_dir, gt_dict):
     if not md_name in gt_dict: continue
     rst_fns.append(fn)
   rst_fns.sort()
+
+  print('total :', len(rst_fns))
 
   rst_dict=dict()
   for fn in rst_fns:
@@ -248,11 +255,11 @@ def draw_roc(out_dir, gt_dict):
 
 if __name__ == '__main__':
     home = os.environ['HOME']
-    csv_path = os.path.join(home,'data/round5-dataset-train/METADATA.csv')
-    gt_csv = utils.read_gt_csv(csv_path)
+    csv_path = os.path.join(home,'data/round5-dataset-train-v0/METADATA.csv')
+    gt_dict = utils.read_gt_csv(csv_path)
     filter_dict=dict()
     #filter_dict['model_architecture']='GruLinear'
-    rst_dict = trim_gt(gt_csv, filter_dict)
+    rst_dict = trim_gt(gt_dict, filter_dict)
     draw_roc('round5_rsts', rst_dict)
 
 

@@ -260,12 +260,13 @@ def mad_detection(l1_norm_list, crosp_lb):
 
 
 def read_gt_csv(filepath):
-  rst = list()
+  rst_dict = dict()
   with open(filepath,'r',newline='') as csvfile:
     csvreader = csv.DictReader(csvfile)
     for row in csvreader:
-      rst.append(row)
-  return rst
+      md_name=row['model_name']
+      rst_dict[md_name]=row
+  return rst_dict
 
 
 def demo_heatmap(R, save_path):

@@ -20,7 +20,8 @@ import pickle
 
 
 def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,device,use_amp):
-    data_dict=dict()
+    embs=list()
+    labels=list()
 
     fn_id=0
     for fn in fns:
@@ -29,7 +30,8 @@ def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,dev
         with open(fn, 'r') as fh:
             text = fh.read()
 
-        data=dict()
+        fn=os.path.split(fn)[1]
+        lb=int(fn.split('_')[1])
 
         # identify the max sequence length for the given embedding
         max_input_length = tokenizer.max_model_input_sizes[tokenizer.name_or_path]
@@ -38,9 +40,6 @@ def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,dev
         # extract the input token ids and the attention mask
         input_ids = results.data['input_ids']
         attention_mask = results.data['attention_mask']
-
-        data['inputs_ids']=input_ids
-        data['attention_mask']=attention_mask
 
         # convert to embedding
         with torch.no_grad():
@@ -70,9 +69,12 @@ def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,dev
             # reshape embedding vector to create batch size of 1
             embedding_vector = np.expand_dims(embedding_vector, axis=0)
 
-            data['embedding_vector']=embedding_vector
-            data_dict[fn_id]=data
-    return data_dict
+            embs.append(embedding_vector)
+            labels.append(lb)
+
+    embs=np.concatenate(embs,axis=0)
+    labels=np.asarray(labels)
+    return {'embedding_vectors':embs,'labels':labels,'filenames':fns}
 
 
 
@@ -125,12 +127,14 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         # embedding = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
 
 
-
         # Inference the example images in data
         fns = [os.path.join(examples_dirpath, fn) for fn in os.listdir(examples_dirpath) if fn.endswith('.txt')]
         fns.sort()  # ensure file ordering
 
         data_dict  = generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,device, use_amp)
+
+        embeddings=data_dict['embedding_vectors']
+        labels=data_dict['labels']
 
     else:
         folder='round5_pkls'
@@ -138,6 +142,33 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         d_path=os.path.join(folder,md_name+'_clean_data.pkl')
         with open(d_path,'rb') as f:
             data_dict=pickle.load(f)
+
+        embeddings=list()
+        for num in data_dict:
+            embeddings.append(data_dict[num]['embedding_vector'])
+        embeddings=np.concatenate(embeddings,axis=0)
+
+        #'''cheat augment dataset
+        import json
+        json_path=os.path.split(model_filepath)[0]
+        json_path=os.path.join(json_path,'config.json')
+        with open(json_path) as f:
+            data_dict=json.load(f)
+        source=data_dict['source_dataset']
+
+        emb=os.path.split(embedding_filepath)[1]
+        emb=emb.split('-')[0]
+        if emb=='GPT': emb='GPT-2'
+
+        aug_source=emb+'_'+source
+        aug_path=os.path.join('/home/tdteach/data/round5-dataset-train/aug_text',aug_source+'.pkl')
+        with open(aug_path,'rb') as f:
+            data_dict=pickle.load(f)
+        aug_embs=data_dict['embedding_vectors']
+        embeddings=np.concatenate([embeddings,aug_embs[:1000]],axis=0)
+        #'''
+
+
 
     # load the classification model and move it to the GPU
     print(model_filepath)
@@ -148,10 +179,14 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     #rst_dict = batch_reverse(data_dict, classification_model, device)
     #utils.save_pkl_results(rst_dict, save_name='clean_probs',folder='round5_rsts')
 
-    rst_dict = pca_analysis(data_dict, classification_model, device)
-    #utils.save_pkl_results(rst_dict, save_name='clean_pca',folder='round5_rsts')
+    #rst_dict = pca_analysis(embeddings, classification_model, device)
+    #utils.save_pkl_results(rst_dict, save_name='clean_aug_pca',folder='round5_rsts')
+    #sc=rst_dict['variance_ratio']
 
-    sc=rst_dict['variance_ratio']
+    rst_dict=jacobian_analysis(embeddings,labels, classification_model,device)
+    #utils.save_pkl_results(rst_dict, save_name='jacobian',folder='round5_rsts')
+    sc=rst_dict['rf_predict'][0][1]
+
 
 
 
@@ -187,7 +222,8 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     # with open(os.path.join(scratch_dirpath, 'test.txt'), 'w') as fh:
     #    fh.write('this is a test')
 
-    trojan_probability = final_adjust(sc)
+    trojan_probability = sc
+    #trojan_probability = final_adjust(sc)
     print('Trojan Probability: {}'.format(trojan_probability))
 
     with open(result_filepath, 'w') as fh:
@@ -196,10 +232,17 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
 
 
+
 class DataLoader():
     def __init__(self, data, batch_size, shuffle=False):
-        self.data = data
-        self.n=data.shape[0]
+        if type(data) is dict:
+            self.data=data['data']
+            self.labels=data['labels']
+            self.with_labels=True
+        else:
+            self.data = data
+            self.with_labels=False
+        self.n=self.data.shape[0]
         self.batch_size=batch_size
         self.shuffle=shuffle
         self.cur_i=0
@@ -210,17 +253,27 @@ class DataLoader():
         a = np.asarray(a)
         np.random.shuffle(a)
         self.data=self.data[a,:,:]
+        if self.with_labels:
+            self.labels=self.labels[a]
 
     def next(self):
         next_i=self.cur_i+self.batch_size
         d=self.data[self.cur_i:min(self.n,next_i),:,:]
+        if self.with_labels:
+            l=self.labels[self.cur_i:min(self.n,next_i)]
         if next_i > self.n:
             dr=self.data[0:next_i-self.n,:,:]
             d = np.concatenate([d,dr],axis=0)
+            if self.with_labels:
+                lr=self.labels[0:next_i-self.n,:,:]
+                l = np.concatenate([l,lr],axis=0)
 
         if next_i >= self.n:
             self.do_shuffle()
         self.cur_i=next_i%self.n
+
+        if self.with_labels:
+            return d,l
         return d
 
 
@@ -306,12 +359,7 @@ def batch_reverse(data_dict,classification_model,device):
 
     return rst_dict
 
-def pca_analysis(data_dict,classification_model,device):
-
-    embeddings=list()
-    for num in data_dict:
-        embeddings.append(data_dict[num]['embedding_vector'])
-    embeddings=np.concatenate(embeddings,axis=0)
+def pca_analysis(embeddings,classification_model,device):
 
     input_rds=list()
     def hook(model, input, output):
@@ -324,8 +372,13 @@ def pca_analysis(data_dict,classification_model,device):
             ch.register_forward_hook(hook)
             break
 
-    embedding_all_tensor=torch.from_numpy(embeddings).to(device)
-    logits_all = classification_model(embedding_all_tensor).detach().cpu().numpy()
+    batch_size=64
+    dl=DataLoader(embeddings, batch_size, shuffle=True)
+    steps=len(embeddings)//batch_size
+    for i in range(steps):
+        embs=dl.next()
+        embs_tensor=torch.from_numpy(embs).to(device)
+        logits = classification_model(embs_tensor).detach().cpu().numpy()
 
     input_rds=np.concatenate(input_rds)
     print(input_rds.shape)
@@ -339,9 +392,100 @@ def pca_analysis(data_dict,classification_model,device):
 
     return rst_dict
 
+def jacobian_analysis(embeddings,labels, classification_model,device):
+
+    from torch.autograd import Variable
+    import torch.nn.functional as F
+
+    classification_model.train()
+
+    batch_size=4
+    dl=DataLoader({'data':embeddings,'labels':labels}, batch_size, shuffle=True)
+
+    embs_grads=list()
+    repr_grads=list()
+    def hook(module, grad_input, grad_output):
+        for g in grad_input:
+            g_shape=g.shape
+            if len(g_shape)==1: continue
+            if g_shape[0]==batch_size:
+                break
+        '''
+        print(len(grad_input))
+        for g in grad_input:
+            print(g.shape)
+        for g in grad_output:
+            print(g.shape)
+        #'''
+        repr_grads.append(g.detach().cpu().numpy())
+
+    model=classification_model
+    for ch in model.children():
+        ch_name = type(ch).__name__
+        if ch_name=='Linear':
+            ch.register_backward_hook(hook)
+            break
+
+    delta_tensor = None
+
+    steps=len(embeddings)//batch_size
+    for i in range(steps):
+        embs, lbs=dl.next()
+
+        if delta_tensor is None:
+            delta = np.zeros_like(embs, dtype=np.float32)
+            delta_tensor = Variable(torch.from_numpy(delta), requires_grad=True)
+            opt = torch.optim.SGD([delta_tensor],  lr=1.0)
+
+
+        embs_tensor=torch.from_numpy(embs).to(device)
+        lbs_tensor=torch.from_numpy(lbs).to(device)
+
+        logits_tensor = classification_model(embs_tensor+delta_tensor.to(device))
+
+        loss=F.cross_entropy(logits_tensor,1-lbs_tensor)
+
+        opt.zero_grad()
+        loss.backward()
+
+        embs_grads.append(delta_tensor.grad.detach().cpu().numpy())
+
+
+    repr_grads=np.concatenate(repr_grads,axis=0)
+    embs_grads=np.concatenate(embs_grads,axis=0)
+
+    print(repr_grads.shape)
+
+    avg_repr_grads=np.mean(repr_grads,axis=0)
+    avg_embs_grads=np.mean(embs_grads,axis=0)
+    avg_repr_grads=avg_repr_grads.flatten()
+    avg_embs_grads=avg_embs_grads.flatten()
+
+    '''
+    rd_dict={'avg_repr_grads':avg_repr_grads,'avg_embs_grads':avg_embs_grads}
+    utils.save_pkl_results(rd_dict,save_name='rf_feature',folder='rf_feature')
+    return {'haha':0}
+    #'''
+
+    rf_input=np.concatenate([avg_embs_grads,avg_repr_grads],axis=0)
+
+    import joblib
+    from sklearn.ensemble import RandomForestClassifier
+    rf_path='/rf.joblib'
+    #joblib.dump(rf,rf_path)
+    rf=joblib.load(rf_path)
+
+    rf_input=np.expand_dims(rf_input,axis=0)
+    prob=rf.predict_proba(rf_input)
+    print(prob)
+
+    rst_dict={'rf_predict':prob}
+
+    return rst_dict
+
 
 def final_adjust(sc):
-    print(sc)
+    print(sc[:10], np.sum(sc[:10]))
     sc=np.sum(sc[:2])
     sc=sc*2-1
     sc=max(sc,-1+1e-12)

@@ -55,16 +55,6 @@ class GruLinearModel(torch.nn.Module):
         self.rnn.flatten_parameters()
         _, hidden = self.rnn(data)
 
-        '''
-        print(data.shape)
-        print(self.rnn.num_layers)
-        print(z.shape)
-        print(hidden.shape)
-        exit(0)
-        '''
-
-
-
         # hidden = [n layers * n directions, batch size, emb dim]
         if self.rnn.bidirectional:
             hidden = self.dropout(torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1))

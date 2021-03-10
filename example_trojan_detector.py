@@ -217,7 +217,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     lr_fet=np.expand_dims(lr_fet,axis=0)
     lr_out=lr_clf.predict_proba(lr_fet)
 
-    stack_fet=np.concatenate([lr_out,rf_out],axis=1)
+    stack_fet=np.concatenate([rf_out,lr_out],axis=1)
     stack_out=stack_clf.predict_proba(stack_fet)
 
     sc=stack_out[0,1]
@@ -266,6 +266,8 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
     with open(result_filepath, 'w') as fh:
         fh.write("{}".format(trojan_probability))
+
+    utils.save_pkl_results({'final':sc}, save_name='stack', folder='output')
 
 
 
@@ -476,6 +478,7 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
       embeddings=np.squeeze(embeddings,axis=1)
       mean_vec = np.mean(embeddings,axis=0)
       cov_mat = np.cov(embeddings.transpose())
+      np.random.seed(1234)
       aug_embs = np.random.multivariate_normal(mean_vec,cov_mat,500)
       aug_embs=aug_embs.astype(np.float32)
       embeddings=np.concatenate([embeddings,aug_embs],axis=0)

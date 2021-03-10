@@ -93,10 +93,15 @@ def _deal_jacobian_data(data):
     return data['rf_predict'][0][0]
 
 
+def _deal_stack(data):
+    return data['final']
+
+
 def deal_data(data):
   #return _deal_reverse_data(data)
-  return _deal_pca_data(data)
+  #return _deal_pca_data(data)
   #return _deal_jacobian_data(data)
+  return _deal_stack(data)
 
 
 
@@ -136,7 +141,7 @@ def linear_adjust(lb_list, sc_list):
 
 def draw_roc(out_dir, gt_dict):
 
-  pattern='pca.pkl'
+  pattern='stack.pkl'
   #pattern='jacobian'
 
   fns=os.listdir(out_dir)
@@ -264,7 +269,7 @@ if __name__ == '__main__':
     filter_dict=dict()
     #filter_dict['model_architecture']='GruLinear'
     rst_dict = trim_gt(gt_dict, filter_dict)
-    draw_roc('round5_rsts', rst_dict)
+    draw_roc('output', rst_dict)
 
 
 

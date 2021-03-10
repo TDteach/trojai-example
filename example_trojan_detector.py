@@ -18,6 +18,8 @@ warnings.filterwarnings("ignore")
 import utils
 import pickle
 
+RELEASE=True
+
 
 def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,device,use_amp):
     embs=list()
@@ -113,6 +115,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     # Note, example logit values (in the release datasets) were computed without AMP (i.e. in FP32)
 
     generate_embeddings=True
+    cheat_augmentation=False
 
     if generate_embeddings:
         # TODO this uses the correct huggingface tokenizer instead of the one provided by the filepath, since GitHub has a 100MB file size limit
@@ -136,6 +139,8 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         embeddings=data_dict['embedding_vectors']
         labels=data_dict['labels']
 
+        #utils.save_pkl_results(data_dict,'clean_data', folder='round5_pkls')
+
     else:
         folder='round5_pkls'
         md_name=utils.current_model_name
@@ -143,12 +148,11 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         with open(d_path,'rb') as f:
             data_dict=pickle.load(f)
 
-        embeddings=list()
-        for num in data_dict:
-            embeddings.append(data_dict[num]['embedding_vector'])
-        embeddings=np.concatenate(embeddings,axis=0)
+        embeddings=data_dict['embedding_vectors']
+        labels=data_dict['labels']
 
-        #'''cheat augment dataset
+    #'''cheat augment dataset
+    if cheat_augmentation:
         import json
         json_path=os.path.split(model_filepath)[0]
         json_path=os.path.join(json_path,'config.json')
@@ -165,8 +169,12 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         with open(aug_path,'rb') as f:
             data_dict=pickle.load(f)
         aug_embs=data_dict['embedding_vectors']
-        embeddings=np.concatenate([embeddings,aug_embs[:1000]],axis=0)
-        #'''
+
+        n_aug=len(aug_embs)
+        idx=np.random.permutation(n_aug)
+        idx=idx[:len(embeddings)]
+        embeddings=np.concatenate([embeddings,aug_embs[idx]],axis=0)
+    #'''
 
 
 
@@ -179,13 +187,43 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     #rst_dict = batch_reverse(data_dict, classification_model, device)
     #utils.save_pkl_results(rst_dict, save_name='clean_probs',folder='round5_rsts')
 
-    #rst_dict = pca_analysis(embeddings, classification_model, device)
-    #utils.save_pkl_results(rst_dict, save_name='clean_aug_pca',folder='round5_rsts')
+    pca_rst_dict = pca_analysis(embeddings, classification_model, device)
+    #utils.save_pkl_results(rst_dict, save_name='pca',folder='round5_rsts')
     #sc=rst_dict['variance_ratio']
 
-    rst_dict=jacobian_analysis(embeddings,labels, classification_model,device)
+
+    jacobian_rst_dict=jacobian_analysis(embeddings,labels, classification_model,device)
     #utils.save_pkl_results(rst_dict, save_name='jacobian',folder='round5_rsts')
-    sc=rst_dict['rf_predict'][0][1]
+    #sc=rst_dict['rf_predict'][0][1]
+
+    #=============stacking model=============
+    import joblib
+    if RELEASE: prefix='/'
+    else: prefix=''
+    rf_path=prefix+'rf_clf.joblib'
+    lr_path=prefix+'lr_clf.joblib'
+    stack_path=prefix+'stack_clf.joblib'
+    rf_clf=joblib.load(rf_path)
+    lr_clf=joblib.load(lr_path)
+    stack_clf=joblib.load(stack_path)
+
+    #prob=rf.predict_proba(rf_input)
+
+    rf_fet=jacobian_rst_dict['avg_embs_grads']
+    rf_fet=np.expand_dims(rf_fet,axis=0)
+    rf_out=rf_clf.predict_proba(rf_fet)
+
+    lr_fet=pca_rst_dict['variance_ratio']
+    lr_fet=np.expand_dims(lr_fet,axis=0)
+    lr_out=lr_clf.predict_proba(lr_fet)
+
+    stack_fet=np.concatenate([lr_out,rf_out],axis=1)
+    stack_out=stack_clf.predict_proba(stack_fet)
+
+    sc=stack_out[0,1]
+
+
+
 
 
 
@@ -228,8 +266,6 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
     with open(result_filepath, 'w') as fh:
         fh.write("{}".format(trojan_probability))
-
-
 
 
 
@@ -369,10 +405,10 @@ def pca_analysis(embeddings,classification_model,device):
     for ch in model.children():
         ch_name = type(ch).__name__
         if ch_name=='Linear':
-            ch.register_forward_hook(hook)
+            hook_handle=ch.register_forward_hook(hook)
             break
 
-    batch_size=64
+    batch_size=10
     dl=DataLoader(embeddings, batch_size, shuffle=True)
     steps=len(embeddings)//batch_size
     for i in range(steps):
@@ -381,7 +417,9 @@ def pca_analysis(embeddings,classification_model,device):
         logits = classification_model(embs_tensor).detach().cpu().numpy()
 
     input_rds=np.concatenate(input_rds)
-    print(input_rds.shape)
+    #print(input_rds.shape)
+
+    hook_handle.remove()
 
     from sklearn.decomposition import PCA
     pca=PCA()
@@ -399,8 +437,7 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
 
     classification_model.train()
 
-    batch_size=4
-    dl=DataLoader({'data':embeddings,'labels':labels}, batch_size, shuffle=True)
+    batch_size=10
 
     embs_grads=list()
     repr_grads=list()
@@ -408,7 +445,7 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
         for g in grad_input:
             g_shape=g.shape
             if len(g_shape)==1: continue
-            if g_shape[0]==batch_size:
+            if g_shape[0]==512:
                 break
         '''
         print(len(grad_input))
@@ -417,7 +454,8 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
         for g in grad_output:
             print(g.shape)
         #'''
-        repr_grads.append(g.detach().cpu().numpy())
+        g_cpu=g.detach().cpu().numpy()
+        repr_grads.append(g_cpu.flatten())
 
     model=classification_model
     for ch in model.children():
@@ -428,9 +466,30 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
 
     delta_tensor = None
 
-    steps=len(embeddings)//batch_size
-    for i in range(steps):
-        embs, lbs=dl.next()
+    n_classes=max(labels)+1
+    lb_embs=[embeddings[labels==lb] for lb in range(n_classes) ]
+    #dl=DataLoader({'data':embeddings,'labels':labels}, batch_size, shuffle=True)
+
+    rd_dict=dict()
+    for slb,embeddings in enumerate(lb_embs):
+      #'''
+      embeddings=np.squeeze(embeddings,axis=1)
+      mean_vec = np.mean(embeddings,axis=0)
+      cov_mat = np.cov(embeddings.transpose())
+      aug_embs = np.random.multivariate_normal(mean_vec,cov_mat,500)
+      aug_embs=aug_embs.astype(np.float32)
+      embeddings=np.concatenate([embeddings,aug_embs],axis=0)
+      embeddings=np.expand_dims(embeddings,axis=1)
+      #'''
+
+      dl=DataLoader(embeddings, batch_size, shuffle=True)
+      steps=len(embeddings)//batch_size
+      embs_grads=list()
+      repr_grads=list()
+      for i in range(steps):
+        #embs, lbs=dl.next()
+        embs =dl.next()
+        lbs=np.zeros(len(embs),dtype=np.int64)
 
         if delta_tensor is None:
             delta = np.zeros_like(embs, dtype=np.float32)
@@ -443,43 +502,56 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
 
         logits_tensor = classification_model(embs_tensor+delta_tensor.to(device))
 
-        loss=F.cross_entropy(logits_tensor,1-lbs_tensor)
+        loss=F.cross_entropy(logits_tensor,(1-slb)-lbs_tensor)
 
         opt.zero_grad()
         loss.backward()
 
+        '''
+        all_weights=model.rnn.all_weights
+        print(model.rnn.num_layers)
+        print(model.rnn.bidirectional)
+        print(model.rnn)
+        for w in all_weights:
+            print(len(w))
+            for ww in w:
+                print(torch.sum(ww.grad))
+                print(ww.grad.shape)
+        exit(0)
+        #'''
+
         embs_grads.append(delta_tensor.grad.detach().cpu().numpy())
 
 
-    repr_grads=np.concatenate(repr_grads,axis=0)
-    embs_grads=np.concatenate(embs_grads,axis=0)
+      repr_grads=np.asarray(repr_grads)
+      embs_grads=np.concatenate(embs_grads,axis=0)
 
-    print(repr_grads.shape)
 
-    avg_repr_grads=np.mean(repr_grads,axis=0)
-    avg_embs_grads=np.mean(embs_grads,axis=0)
-    avg_repr_grads=avg_repr_grads.flatten()
-    avg_embs_grads=avg_embs_grads.flatten()
+      avg_repr_grads=np.mean(repr_grads,axis=0)
+      avg_embs_grads=np.mean(embs_grads,axis=0)
+      avg_repr_grads=avg_repr_grads.flatten()
+      avg_embs_grads=avg_embs_grads.flatten()
 
-    '''
-    rd_dict={'avg_repr_grads':avg_repr_grads,'avg_embs_grads':avg_embs_grads}
-    utils.save_pkl_results(rd_dict,save_name='rf_feature',folder='rf_feature')
-    return {'haha':0}
-    #'''
+      #print(avg_repr_grads.shape)
 
-    rf_input=np.concatenate([avg_embs_grads,avg_repr_grads],axis=0)
+      rd_dict[slb]={'repr':avg_repr_grads, 'embs':avg_embs_grads}
 
-    import joblib
-    from sklearn.ensemble import RandomForestClassifier
-    rf_path='/rf.joblib'
-    #joblib.dump(rf,rf_path)
-    rf=joblib.load(rf_path)
+    args=list()
+    aegs=list()
+    for slb in range(n_classes):
+        args.append(rd_dict[slb]['repr'])
+        aegs.append(rd_dict[slb]['embs'])
+    args=np.concatenate(args,axis=0)
+    aegs=np.concatenate(aegs,axis=0)
 
-    rf_input=np.expand_dims(rf_input,axis=0)
-    prob=rf.predict_proba(rf_input)
-    print(prob)
+    rst_dict={'avg_repr_grads':args,
+              'avg_embs_grads':aegs,
+              }
 
-    rst_dict={'rf_predict':prob}
+    return rst_dict
+    rst_dict={'rf_predict':prob,
+              'avg_repr_grads':avg_repr_grads,
+              'avg_embs_grads':avg_embs_grads}
 
     return rst_dict
 

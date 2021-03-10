@@ -20,7 +20,7 @@ from torch.autograd import Variable
 import utils
 
 
-RELEASE = True
+RELEASE = False
 
 CONSIDER_LAYER_TYPE = ['Conv2d', 'Linear']
 if RELEASE:

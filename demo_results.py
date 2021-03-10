@@ -72,7 +72,7 @@ def trim_gt(gt_dict, t_dict):
 
 def _deal_pca_data(data):
   ratio=data['variance_ratio']
-  return np.sum(ratio[:1])
+  return np.sum(ratio[:2])
 
 def _deal_reverse_data(data):
   sc_list=list()
@@ -95,8 +95,8 @@ def _deal_jacobian_data(data):
 
 def deal_data(data):
   #return _deal_reverse_data(data)
-  #return _deal_pca_data(data)
-  return _deal_jacobian_data(data)
+  return _deal_pca_data(data)
+  #return _deal_jacobian_data(data)
 
 
 
@@ -136,13 +136,17 @@ def linear_adjust(lb_list, sc_list):
 
 def draw_roc(out_dir, gt_dict):
 
-  #pattern='clean_aug_pca'
-  pattern='jacobian'
+  pattern='pca.pkl'
+  #pattern='jacobian'
 
   fns=os.listdir(out_dir)
   rst_fns=list()
   for fn in fns:
     if pattern not in fn: continue
+
+    if 'double' in fn : continue
+    if 'clean' in fn : continue
+
     md_name=fn.split('_')[0]
     if not md_name in gt_dict: continue
     rst_fns.append(fn)
@@ -255,7 +259,7 @@ def draw_roc(out_dir, gt_dict):
 
 if __name__ == '__main__':
     home = os.environ['HOME']
-    csv_path = os.path.join(home,'data/round5-dataset-train-v0/METADATA.csv')
+    csv_path = os.path.join(home,'data/round5-dataset-train/METADATA.csv')
     gt_dict = utils.read_gt_csv(csv_path)
     filter_dict=dict()
     #filter_dict['model_architecture']='GruLinear'

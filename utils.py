@@ -145,10 +145,10 @@ def save_pkl_results(data, save_name='', folder='scratch', force_save=False):
     if not os.path.exists(folder):
         os.makedirs(folder)
 
-    print('save out results')
     if len(save_name) > 0:
         save_name = '_'+save_name
     fpath = os.path.join(folder, current_model_name+save_name+'.pkl')
+    print('save out results:',fpath)
     with open(fpath,'wb') as f:
         pickle.dump(data,f)
 

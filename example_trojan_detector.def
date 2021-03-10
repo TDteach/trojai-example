@@ -11,7 +11,9 @@ From: pytorch/pytorch:latest
     ./utils.py /
     ./pytorch_ssim.py /
     ./model_factories.py /
-    ./rf.joblib /
+    ./rf_clf.joblib /
+    ./lr_clf.joblib /
+    ./stack_clf.joblib /
 
 %post
     /opt/conda/bin/conda install scikit-image

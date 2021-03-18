@@ -127,7 +127,7 @@ def linear_adjust(lb_list, sc_list):
 
   max_step=500
   for step in range(max_step):
-    if step%100==0: print(step)
+    #if step%100==0: print(step)
     cg=torch.tanh(sc*va+vb)
     cg=cg/2+0.5
     s = torch.log(cg)*lb+(1-lb)*torch.log(1-cg)

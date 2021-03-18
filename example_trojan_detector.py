@@ -21,21 +21,8 @@ import pickle
 RELEASE=True
 
 
-def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,device,use_amp):
-    embs=list()
-    labels=list()
-
-    fn_id=0
-    for fn in fns:
-        fn_id+=1
-        # load the example
-        with open(fn, 'r') as fh:
-            text = fh.read()
-
-        fn=os.path.split(fn)[1]
-        lb=int(fn.split('_')[1])
-
-        # identify the max sequence length for the given embedding
+def get_embedding_fn(tokenizer, embedding, cls_token_is_first, device, use_amp):
+    def predict(text):
         max_input_length = tokenizer.max_model_input_sizes[tokenizer.name_or_path]
         # tokenize the text
         results = tokenizer(text, max_length=max_input_length - 2, padding=True, truncation=True, return_tensors="pt")
@@ -70,13 +57,22 @@ def generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,dev
 
             # reshape embedding vector to create batch size of 1
             embedding_vector = np.expand_dims(embedding_vector, axis=0)
+        return embedding_vector
+    return predict
 
-            embs.append(embedding_vector)
-            labels.append(lb)
+
+def generate_embeddings_from_text(text_list,predict_fn):
+    embs=list()
+
+    fn_id=0
+    for text in text_list:
+        fn_id+=1
+
+        embedding_vector=predict_fn(text)
+        embs.append(embedding_vector)
 
     embs=np.concatenate(embs,axis=0)
-    labels=np.asarray(labels)
-    return {'embedding_vectors':embs,'labels':labels,'filenames':fns}
+    return {'embedding_vectors':embs}
 
 
 
@@ -118,12 +114,14 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     cheat_augmentation=False
 
     if generate_embeddings:
+
         # TODO this uses the correct huggingface tokenizer instead of the one provided by the filepath, since GitHub has a 100MB file size limit
         tokenizer = torch.load(tokenizer_filepath)
         # tokenizer = transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
         # set the padding token if its undefined
         if not hasattr(tokenizer, 'pad_token') or tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+
         # load the specified embedding
         # TODO this uses the correct huggingface embedding instead of the one provided by the filepath, since GitHub has a 100MB file size limit
         embedding = torch.load(embedding_filepath, map_location=torch.device(device))
@@ -133,23 +131,29 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         # Inference the example images in data
         fns = [os.path.join(examples_dirpath, fn) for fn in os.listdir(examples_dirpath) if fn.endswith('.txt')]
         fns.sort()  # ensure file ordering
+        text_list=list()
+        for fn in fns:
+            with open(fn, 'r') as fh:
+                text = fh.read()
+            text_list.append(text)
 
-        data_dict  = generate_embeddings_from_text(fns,tokenizer,embedding,cls_token_is_first,device, use_amp)
+        emb_pred_fn=get_embedding_fn(tokenizer, embedding, cls_token_is_first, device, use_amp)
+
+        data_dict  = generate_embeddings_from_text(text_list, emb_pred_fn)
 
         embeddings=data_dict['embedding_vectors']
-        labels=data_dict['labels']
 
         #utils.save_pkl_results(data_dict,'clean_data', folder='round5_pkls')
+
 
     else:
         folder='round5_pkls'
         md_name=utils.current_model_name
-        d_path=os.path.join(folder,md_name+'_clean_data.pkl')
+        d_path=os.path.join(folder,md_name+'_v0_clean_data.pkl')
         with open(d_path,'rb') as f:
             data_dict=pickle.load(f)
 
         embeddings=data_dict['embedding_vectors']
-        labels=data_dict['labels']
 
     #'''cheat augment dataset
     if cheat_augmentation:
@@ -172,29 +176,36 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
         n_aug=len(aug_embs)
         idx=np.random.permutation(n_aug)
-        idx=idx[:len(embeddings)]
+        idx=idx[:1000]
         embeddings=np.concatenate([embeddings,aug_embs[idx]],axis=0)
     #'''
 
+    print(embeddings.shape)
 
 
     # load the classification model and move it to the GPU
     print(model_filepath)
-    classification_model = torch.load(model_filepath, map_location=torch.device(device))
+    clf_model = torch.load(model_filepath, map_location=torch.device(device))
 
-    #utils.save_pkl_results(data_dict,save_name='clean_data',folder='round5_pkls')
+    '''
+    char_rst_dict=char_analysis(text_list, emb_pred_fn, clf_model, device)
+    utils.save_pkl_results(char_rst_dict,save_name='v0_char_clean',folder='round5_rsts')
 
-    #rst_dict = batch_reverse(data_dict, classification_model, device)
-    #utils.save_pkl_results(rst_dict, save_name='clean_probs',folder='round5_rsts')
+    print(char_rst_dict)
 
-    pca_rst_dict = pca_analysis(embeddings, classification_model, device)
-    #utils.save_pkl_results(rst_dict, save_name='pca',folder='round5_rsts')
+    exit(0)
+    #'''
+
+
+    pca_rst_dict = pca_analysis(embeddings, clf_model, device)
+    #utils.save_pkl_results(pca_rst_dict, save_name='v0_pca_clean',folder='round5_rsts')
     #sc=rst_dict['variance_ratio']
 
 
-    jacobian_rst_dict=jacobian_analysis(embeddings,labels, classification_model,device)
-    #utils.save_pkl_results(rst_dict, save_name='jacobian',folder='round5_rsts')
-    #sc=rst_dict['rf_predict'][0][1]
+    jacobian_rst_dict=jacobian_analysis(embeddings, clf_model, device)
+    #utils.save_pkl_results(jacobian_rst_dict, save_name='v0_jacobian_normal_aug',folder='round5_rsts')
+
+    #exit(0)
 
     #=============stacking model=============
     import joblib
@@ -207,13 +218,17 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     lr_clf=joblib.load(lr_path)
     stack_clf=joblib.load(stack_path)
 
-    #prob=rf.predict_proba(rf_input)
-
-    rf_fet=jacobian_rst_dict['avg_embs_grads']
+    avg_embs_grads=jacobian_rst_dict['avg_embs_grads']
+    avg_repr_grads=jacobian_rst_dict['avg_repr_grads']
+    rf_fet=avg_embs_grads
+    #rf_fet=np.concatenate([avg_embs_grads,avg_repr_grads],axis=0)
     rf_fet=np.expand_dims(rf_fet,axis=0)
     rf_out=rf_clf.predict_proba(rf_fet)
 
-    lr_fet=pca_rst_dict['variance_ratio']
+    sc=rf_out[0,1]
+
+    '''
+    lr_fet=pca_rst_dict['variance_ratio'][:40]
     lr_fet=np.expand_dims(lr_fet,axis=0)
     lr_out=lr_clf.predict_proba(lr_fet)
 
@@ -221,13 +236,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     stack_out=stack_clf.predict_proba(stack_fet)
 
     sc=stack_out[0,1]
-
-
-
-
-
-
-
+    #'''
     '''
         # create a prediction tensor without graph connections by copying it to a numpy array
         pred_tensor = torch.from_numpy(np.asarray(sentiment_pred)).reshape(-1).to(device)
@@ -267,7 +276,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     with open(result_filepath, 'w') as fh:
         fh.write("{}".format(trojan_probability))
 
-    utils.save_pkl_results({'final':sc}, save_name='stack', folder='output')
+    #utils.save_pkl_results({'final':sc}, save_name='stack', folder='output')
 
 
 
@@ -432,110 +441,106 @@ def pca_analysis(embeddings,classification_model,device):
 
     return rst_dict
 
-def jacobian_analysis(embeddings,labels, classification_model,device):
+def jacobian_analysis(embeddings, model,device):
+    #'''
+    embeddings=np.squeeze(embeddings,axis=1)
+    mean_vec = np.mean(embeddings,axis=0)
+    cov_mat = np.cov(embeddings.transpose())
+    np.random.seed(1234)
+    aug_embs = np.random.multivariate_normal(mean_vec,cov_mat,500)
+    aug_embs=aug_embs.astype(np.float32)
+    embeddings=np.concatenate([embeddings,aug_embs],axis=0)
+    embeddings=np.expand_dims(embeddings,axis=1)
+    #'''
+
 
     from torch.autograd import Variable
     import torch.nn.functional as F
 
-    classification_model.train()
-
+    labels=list()
     batch_size=10
+    dl=DataLoader(embeddings, batch_size, shuffle=False)
+    for step in range(len(embeddings)//batch_size):
+        embs=dl.next()
+        embs_tensor=torch.from_numpy(embs).to(device)
+        logits_tensor = model(embs_tensor.to(device))
+        preds=torch.argmax(logits_tensor,axis=1)
+        labels.append(preds.detach().cpu().numpy())
+    labels=np.concatenate(labels,axis=0)
+    print(labels.shape, np.sum(labels))
 
-    embs_grads=list()
-    repr_grads=list()
-    def hook(module, grad_input, grad_output):
-        for g in grad_input:
-            g_shape=g.shape
-            if len(g_shape)==1: continue
-            if g_shape[0]==512:
-                break
-        '''
-        print(len(grad_input))
-        for g in grad_input:
-            print(g.shape)
-        for g in grad_output:
-            print(g.shape)
-        #'''
-        g_cpu=g.detach().cpu().numpy()
-        repr_grads.append(g_cpu.flatten())
-
-    model=classification_model
-    for ch in model.children():
-        ch_name = type(ch).__name__
-        if ch_name=='Linear':
-            ch.register_backward_hook(hook)
-            break
-
-    delta_tensor = None
+    model.train()
 
     n_classes=max(labels)+1
     lb_embs=[embeddings[labels==lb] for lb in range(n_classes) ]
-    #dl=DataLoader({'data':embeddings,'labels':labels}, batch_size, shuffle=True)
 
     rd_dict=dict()
     for slb,embeddings in enumerate(lb_embs):
-      #'''
-      embeddings=np.squeeze(embeddings,axis=1)
-      mean_vec = np.mean(embeddings,axis=0)
-      cov_mat = np.cov(embeddings.transpose())
-      np.random.seed(1234)
-      aug_embs = np.random.multivariate_normal(mean_vec,cov_mat,500)
-      aug_embs=aug_embs.astype(np.float32)
-      embeddings=np.concatenate([embeddings,aug_embs],axis=0)
-      embeddings=np.expand_dims(embeddings,axis=1)
-      #'''
-
       dl=DataLoader(embeddings, batch_size, shuffle=True)
       steps=len(embeddings)//batch_size
       embs_grads=list()
       repr_grads=list()
       for i in range(steps):
-        #embs, lbs=dl.next()
         embs =dl.next()
-        lbs=np.zeros(len(embs),dtype=np.int64)
+        lbs=slb-np.zeros(len(embs),dtype=np.int64)
 
-        if delta_tensor is None:
-            delta = np.zeros_like(embs, dtype=np.float32)
-            delta_tensor = Variable(torch.from_numpy(delta), requires_grad=True)
-            opt = torch.optim.SGD([delta_tensor],  lr=1.0)
-
+        delta = np.zeros_like(embs, dtype=np.float32)
+        delta_tensor = Variable(torch.from_numpy(delta), requires_grad=True)
+        opt = torch.optim.SGD([delta_tensor],  lr=0.1)
 
         embs_tensor=torch.from_numpy(embs).to(device)
         lbs_tensor=torch.from_numpy(lbs).to(device)
 
-        logits_tensor = classification_model(embs_tensor+delta_tensor.to(device))
+        _embs_grads=list()
+        _w_grads=list()
+        for t in range(10):
+            logits_tensor = model(embs_tensor+delta_tensor.to(device))
+            if t==0:
+                ol=logits_tensor.detach().cpu().numpy()
+            loss=F.cross_entropy(logits_tensor,1-lbs_tensor)
+            opt.zero_grad()
+            loss.backward()
 
-        loss=F.cross_entropy(logits_tensor,(1-slb)-lbs_tensor)
+            _embs_grad= delta_tensor.grad.detach().cpu().numpy()
+            _embs_grads.append(_embs_grad)
 
-        opt.zero_grad()
-        loss.backward()
+            #'''
+            all_weights=model.rnn.all_weights
+            w_grad_list=list()
+            for w_layer in all_weights:
+                for w in w_layer:
+                    shape=w.grad.shape
+                    if len(shape)==2 and shape[1]==256:
+                        grad=w.grad.detach().cpu().numpy()
+                        grad=np.mean(grad,axis=0)
+                        w_grad_list.append(grad)
+                        break
+            w_grad_list=np.concatenate(w_grad_list,axis=0)
+            _w_grads.append(w_grad_list)
+            #'''
 
-        '''
-        all_weights=model.rnn.all_weights
-        print(model.rnn.num_layers)
-        print(model.rnn.bidirectional)
-        print(model.rnn)
-        for w in all_weights:
-            print(len(w))
-            for ww in w:
-                print(torch.sum(ww.grad))
-                print(ww.grad.shape)
-        exit(0)
-        #'''
+            opt.step()
 
-        embs_grads.append(delta_tensor.grad.detach().cpu().numpy())
+        logits_tensor = model(embs_tensor+delta_tensor.to(device))
+        fl=logits_tensor.detach().cpu().numpy()
+        diff_logits=fl-ol
+        diff_logits=np.mean(diff_logits,axis=0)
 
+
+        _embs_grads=np.concatenate(_embs_grads,axis=2)
+        embs_grads.append(_embs_grads)
+
+        _w_grads=np.concatenate(_w_grads,axis=0)
+        repr_grad=np.concatenate([diff_logits,_w_grads],axis=0)
+        repr_grads.append(repr_grad)
 
       repr_grads=np.asarray(repr_grads)
       embs_grads=np.concatenate(embs_grads,axis=0)
-
 
       avg_repr_grads=np.mean(repr_grads,axis=0)
       avg_embs_grads=np.mean(embs_grads,axis=0)
       avg_repr_grads=avg_repr_grads.flatten()
       avg_embs_grads=avg_embs_grads.flatten()
-
-      #print(avg_repr_grads.shape)
 
       rd_dict[slb]={'repr':avg_repr_grads, 'embs':avg_embs_grads}
 
@@ -547,27 +552,61 @@ def jacobian_analysis(embeddings,labels, classification_model,device):
     args=np.concatenate(args,axis=0)
     aegs=np.concatenate(aegs,axis=0)
 
+    #print(args.shape)
+    #print(aegs.shape)
+
     rst_dict={'avg_repr_grads':args,
               'avg_embs_grads':aegs,
               }
 
     return rst_dict
-    rst_dict={'rf_predict':prob,
-              'avg_repr_grads':avg_repr_grads,
-              'avg_embs_grads':avg_embs_grads}
 
-    return rst_dict
+
+def char_analysis(text_list, emb_model, clf_model, device):
+
+    char_list = ['0','1','2','3','4','5','6','7','8','9','-','&','.',',','!','/','(','~','+','=','*','"',')','?',':','>','@','$','#','%',';','\'','|','<','[',']','{','}','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z','^']
+
+
+    def inference(text):
+        emb_vector=emb_model(text)
+        emb_tensor=torch.from_numpy(emb_vector).to(device)
+        logits_tensor = clf_model(emb_tensor)
+        lb_tensor=torch.argmax(logits_tensor,axis=1)
+        lb=lb_tensor.detach().cpu().numpy()
+        lb=lb[0]
+        return lb
+
+    n_char=len(char_list)
+    lb_ct=np.zeros(2)
+    mis_ct=np.zeros(2)
+    for text in text_list:
+        o_lb=inference(text)
+        lb_ct[o_lb]+=1
+        embs=list()
+        for k,ch in enumerate(char_list):
+            ch_text=ch+' '+text
+            text_ch=text+' '+ch
+            embs.append(emb_model(text_ch))
+            embs.append(emb_model(ch_text))
+
+        embs=np.concatenate(embs,axis=0)
+        embs_tensor=torch.from_numpy(embs).to(device)
+        logits_tensor=clf_model(embs_tensor)
+        lbs_tensor=torch.argmax(logits_tensor,axis=1)
+        lbs=lbs_tensor.detach().cpu().numpy()
+        mis_ct[o_lb]+=abs(len(lbs)*o_lb-np.sum(lbs))
+
+    mis_ct=mis_ct/lb_ct
+    return {'mis_ct':mis_ct}
 
 
 def final_adjust(sc):
-    print(sc[:10], np.sum(sc[:10]))
-    sc=np.sum(sc[:2])
     sc=sc*2-1
     sc=max(sc,-1+1e-12)
     sc=min(sc,+1-1e-12)
     sc=np.arctanh(sc)
-    va=-0.9296
-    vb=0.9051
+    va=1.1174
+    vb=0.1163
     sc=sc*va+vb
     sc=np.tanh(sc)
     sc=sc/2+0.5

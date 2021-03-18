@@ -20,6 +20,7 @@ From: pytorch/pytorch:latest
     /opt/conda/bin/conda install jsonpickle
     /opt/conda/bin/conda install scikit-learn
     pip install trojai
+    pip3 install lightgbm
 
 %runscript
     exec python3 /example_trojan_detector.py "$@"

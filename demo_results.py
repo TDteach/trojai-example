@@ -139,20 +139,16 @@ def linear_adjust(lb_list, sc_list):
   print(loss, va, vb)
 
 
-def draw_roc(out_dir, gt_dict):
+def draw_roc(out_dir, gt_dict,suffix):
 
-  pattern='stack.pkl'
-  #pattern='jacobian'
+  suffix=suffix+'.pkl'
 
   fns=os.listdir(out_dir)
   rst_fns=list()
   for fn in fns:
-    if pattern not in fn: continue
-
-    if 'double' in fn : continue
-    if 'clean' in fn : continue
-
     md_name=fn.split('_')[0]
+    if fn != md_name+'_'+suffix: continue
+
     if not md_name in gt_dict: continue
     rst_fns.append(fn)
   rst_fns.sort()
@@ -264,12 +260,15 @@ def draw_roc(out_dir, gt_dict):
 
 if __name__ == '__main__':
     home = os.environ['HOME']
-    csv_path = os.path.join(home,'data/round5-dataset-train/METADATA.csv')
+    csv_path = os.path.join(home,'data/round6-dataset-train/METADATA.csv')
     gt_dict = utils.read_gt_csv(csv_path)
     filter_dict=dict()
-    #filter_dict['model_architecture']='GruLinear'
+    #filter_dict['model_architecture']=['GruLinear','LstmLinear']
+    #filter_dict['model_architecture']=['FCLinear']
+    #filter_dict['embedding']=['GPT-2']
+
     rst_dict = trim_gt(gt_dict, filter_dict)
-    draw_roc('output', rst_dict)
+    draw_roc('round6_output', rst_dict, 'LGBM')
 
 
 

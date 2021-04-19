@@ -106,9 +106,13 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         eps_iter=eps_iter)
     #'''
 
-
-    use_amp = False  # attempt to use mixed precision to accelerate embedding conversion process
-    # Note, example logit values (in the release datasets) were computed without AMP (i.e. in FP32)
+    '''
+    tokenizer=transformers.GPT2Tokenizer.from_pretrained('gpt2')
+    torch.save(tokenizer,'tokenizers/GPT-2-gpt2.pt')
+    embedding = transformers.GPT2Model.from_pretrained('gpt2')
+    torch.save(embedding,'embeddings/GPT-2-gpt2.pt')
+    exit(0)
+    #'''
 
     generate_embeddings=True
     cheat_augmentation=False
@@ -116,8 +120,12 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     if generate_embeddings:
 
         # TODO this uses the correct huggingface tokenizer instead of the one provided by the filepath, since GitHub has a 100MB file size limit
-        tokenizer = torch.load(tokenizer_filepath)
         # tokenizer = transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+        # tokenizer = transformers.GPT2Tokenizer.from_pretrained('gpt2')
+        tokenizer = torch.load(tokenizer_filepath)
+        if 'input_ids' not in tokenizer.model_input_names:
+            tokenizer.model_input_names=['input_ids','attention_mask']
+
         # set the padding token if its undefined
         if not hasattr(tokenizer, 'pad_token') or tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -125,8 +133,10 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
         # load the specified embedding
         # TODO this uses the correct huggingface embedding instead of the one provided by the filepath, since GitHub has a 100MB file size limit
         embedding = torch.load(embedding_filepath, map_location=torch.device(device))
+        # embedding = transformers.GPT2Model.from_pretrained('gpt2').to(device)
         # embedding = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
 
+        use_amp=False
 
         # Inference the example images in data
         fns = [os.path.join(examples_dirpath, fn) for fn in os.listdir(examples_dirpath) if fn.endswith('.txt')]
@@ -143,7 +153,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
         embeddings=data_dict['embedding_vectors']
 
-        #utils.save_pkl_results(data_dict,'clean_data', folder='round5_pkls')
+        #utils.save_pkl_results(data_dict,'clean_data', folder='new_model_round6_1_pkls')
 
 
     else:
@@ -198,14 +208,15 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
 
 
     pca_rst_dict = pca_analysis(embeddings, clf_model, device)
-    #utils.save_pkl_results(pca_rst_dict, save_name='v0_pca_clean',folder='round5_rsts')
+    #utils.save_pkl_results(pca_rst_dict, save_name='pca_clean',folder='new_model_round6_1_rsts')
     #sc=rst_dict['variance_ratio']
 
 
     jacobian_rst_dict=jacobian_analysis(embeddings, clf_model, device)
-    #utils.save_pkl_results(jacobian_rst_dict, save_name='v0_jacobian_normal_aug',folder='round5_rsts')
+    #utils.save_pkl_results(jacobian_rst_dict, save_name='jacobian_normal_aug',folder='new_model_round6_1_rsts')
 
     #exit(0)
+
 
     #=============stacking model=============
     import joblib
@@ -276,7 +287,7 @@ def example_trojan_detector(model_filepath, cls_token_is_first, tokenizer_filepa
     with open(result_filepath, 'w') as fh:
         fh.write("{}".format(trojan_probability))
 
-    #utils.save_pkl_results({'final':sc}, save_name='stack', folder='output')
+    #utils.save_pkl_results({'final':sc}, save_name='LGBM', folder='round6_output')
 
 
 
@@ -504,12 +515,14 @@ def jacobian_analysis(embeddings, model,device):
             _embs_grad= delta_tensor.grad.detach().cpu().numpy()
             _embs_grads.append(_embs_grad)
 
-            #'''
+            '''
             all_weights=model.rnn.all_weights
             w_grad_list=list()
             for w_layer in all_weights:
+
                 for w in w_layer:
                     shape=w.grad.shape
+                    print(shape)
                     if len(shape)==2 and shape[1]==256:
                         grad=w.grad.detach().cpu().numpy()
                         grad=np.mean(grad,axis=0)
@@ -530,8 +543,9 @@ def jacobian_analysis(embeddings, model,device):
         _embs_grads=np.concatenate(_embs_grads,axis=2)
         embs_grads.append(_embs_grads)
 
-        _w_grads=np.concatenate(_w_grads,axis=0)
-        repr_grad=np.concatenate([diff_logits,_w_grads],axis=0)
+        #_w_grads=np.concatenate(_w_grads,axis=0)
+        #repr_grad=np.concatenate([diff_logits,_w_grads],axis=0)
+        repr_grad=diff_logits
         repr_grads.append(repr_grad)
 
       repr_grads=np.asarray(repr_grads)

@@ -88,7 +88,7 @@ def read_data(gt_path, params):
         ft_dict=fn(folder, pattern)
         fts_list.append(ft_dict)
 
-    arch_list=['GruLinear','LstmLinear']
+    arch_list=['GruLinear','LstmLinear','FCLinear']
     embe_list=['BERT','DistilBERT','GPT-2']
     arch_fets=list()
     features=[list() for _ in range(len(fts_list))]
@@ -153,10 +153,16 @@ if __name__=='__main__':
     v0_params=[gt_path, [(read_grads_feature, 'round5_rsts','v0_jacobian_normal_aug'),(read_pca_feature,'round5_rsts','v0_pca_clean')]]
     #v0_params=[gt_path, [(read_grads_feature, 'round5_rsts','v0_jacobian_normal_aug'),(read_pca_feature,'round5_rsts','v0_pca_clean'), (read_repr_feature,'round5_rsts','v0_jacobian_normal_aug')]]
     gt_path=os.path.join(data_root,'round5-dataset-train/METADATA.csv')
+    #v1_params=[gt_path, [(read_grads_feature, 'round6_rsts','jacobian_normal_aug'),(read_pca_feature,'round6_rsts','pca_clean')]]
     v1_params=[gt_path, [(read_grads_feature, 'round5_rsts','jacobian_normal_aug'),(read_pca_feature,'round5_rsts','pca_clean')]]
     #v1_params=[gt_path, [(read_grads_feature, 'round5_rsts','jacobian_normal_aug'),(read_pca_feature,'round5_rsts','pca_clean'), (read_repr_feature,'round5_rsts','jacobian_normal_aug')]]
+    gt_path=os.path.join(data_root,'new_models_round6_0/METADATA.csv')
+    v2_params=[gt_path, [(read_grads_feature, 'new_model_round6_0_rsts','jacobian_normal_aug'),(read_pca_feature,'new_model_round6_0_rsts','pca_clean')]]
+    gt_path=os.path.join(data_root,'new_models_round6_1/METADATA.csv')
+    v3_params=[gt_path, [(read_grads_feature, 'new_model_round6_1_rsts','jacobian_normal_aug'),(read_pca_feature,'new_model_round6_1_rsts','pca_clean')]]
 
-    dataset_params=[v0_params,v1_params]
+    dataset_params=[v0_params,v1_params,v2_params,v3_params]
+    #dataset_params=[v1_params]
 
 
     clf_names=['RF','LogisticR']
@@ -167,7 +173,7 @@ if __name__=='__main__':
     label_list=list()
     for gt_path, params in dataset_params:
         _fts_list, _lbs=read_data(gt_path, params)
-        print(_lbs.shape)
+        print('labels shape', _lbs.shape)
         data_list.append(_fts_list)
         label_list.append(_lbs)
     clf_fts_list=list()
@@ -199,29 +205,7 @@ if __name__=='__main__':
 
     from lightgbm import LGBMClassifier
 
-
-
-    lgb_clf=LGBMClassifier()
-    for fts,clf,na in zip(clf_fts_list, clf_list, clf_names):
-            clf.fit(X_train,Y_train)
-
-            preds=clf.predict(X_train)
-            train_acc=np.sum(preds==Y_train)/len(Y_train)
-            print(na+' train acc:', train_acc)
-
-            score=clf.score(X_test, Y_test)
-            preds=clf.predict(X_test)
-            probs=clf.predict_proba(X_test)
-            test_acc=np.sum(preds==Y_test)/len(Y_test)
-            auc=roc_auc_score(Y_test, probs[:,1])
-            print(na+' test acc:', test_acc, 'auc:',auc)
-            if 'RF' in na:
-                rf_auc_list.append(auc)
-        break
-
-
-
-    '''
+    #'''
     auc_list=list()
     rf_auc_list=list()
     best_test_acc=0

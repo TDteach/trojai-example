@@ -16,11 +16,9 @@ From: pytorch/pytorch:latest
     ./stack_clf.joblib /
 
 %post
-    /opt/conda/bin/conda install scikit-image
-    /opt/conda/bin/conda install jsonpickle
-    /opt/conda/bin/conda install scikit-learn
-    pip install trojai
-    pip3 install lightgbm
+    /opt/conda/bin/conda install scikit-image jsonpickle
+    pip install --upgrade trojai
+    pip install lightgbm
 
 %runscript
     exec python3 /example_trojan_detector.py "$@"

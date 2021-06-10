@@ -533,6 +533,7 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     if 'data_filepath' in config.keys():
         print('Source dataset filepath = "{}"'.format(config['data_filepath']))
 
+    '''
     model_dir, fold = os.path.split(model_dirpath)
     #p_dirpath=os.path.join(model_dir, 'id-00000000')
     p_dirpath=model_dirpath
@@ -557,6 +558,7 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
         gg=t0['trigger_executor']['global_trigger']
         trigger_info['global']=gg
         print(trigger_info)
+    #'''
 
     # Load the provided tokenizer
     # TODO: Should use this for evaluation server
@@ -615,8 +617,14 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
         data[na]={'words':original_words, 'labels':original_labels}
 
 
+    num_classes=0
+    for na in data:
+        labels=data[na]['labels']
+        num_classes=max(num_classes, max(labels))
+    num_classes+=1
+
+
     rst, ch_rst=RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
-    print(trigger_info)
 
     store_rst={'rst':rst,'ch_rst':ch_rst}
     utils.save_pkl_results(store_rst, 'rst')

@@ -79,9 +79,14 @@ def _deal_rst_data(data):
         max_ch_acc=max(max_ch_acc,ch_rst[key]['acc'])
     return max(max_acc, max_ch_acc)
 
+def _deal_linear_replace_rst_data(data):
+    avg_acc, layer_acc=data['avg_acc'], data['layer_acc']
+    return avg_acc
+
 
 def deal_data(data):
-  return _deal_rst_data(data)
+  return _deal_linear_replace_rst_data(data)
+  #return _deal_rst_data(data)
 
 
 
@@ -157,6 +162,7 @@ def draw_roc(out_dir, gt_dict,suffix):
   sc_list = list()
   fn_list = list()
   for md_name in rst_dict:
+    print(md_name)
     fn_list.append(md_name)
     lb_list.append(rst_dict[md_name]['label'])
     sc_list.append(deal_data(rst_dict[md_name]['data']))
@@ -223,6 +229,20 @@ def draw_roc(out_dir, gt_dict,suffix):
   exit(0)
   #'''
 
+
+  from sklearn.linear_model import LogisticRegression
+
+  LR_model=LogisticRegression(fit_intercept=True, tol=1e-5, max_iter=10000)
+  sc_list=np.asarray(sc_list)
+  lb_list=np.asarray(lb_list)
+  sc_list=np.expand_dims(sc_list,axis=-1)
+  lb_list=np.expand_dims(lb_list,axis=-1)
+  LR_model.fit(sc_list, lb_list)
+  tr_acc=LR_model.score(sc_list, lb_list)
+  print(tr_acc)
+
+  exit(0)
+
   #for fn,lb,sc in zip(fn_list,lb_list,sc_list):
   #  print(fn,lb,sc)
 
@@ -249,15 +269,15 @@ def draw_roc(out_dir, gt_dict,suffix):
 
 if __name__ == '__main__':
     home = os.environ['HOME']
-    csv_path = os.path.join(home,'data/round7-train-dataset/METADATA.csv')
+    csv_path = os.path.join(home,'data/round7-train-dataset/METADATA.csv')  #modify this path to where the METADATA.csv is
     gt_dict = utils.read_gt_csv(csv_path)
     filter_dict=dict()
     #filter_dict['model_architecture']=['GruLinear','LstmLinear']
     #filter_dict['model_architecture']=['FCLinear']
-    #filter_dict['embedding']=['GPT-2']
+    filter_dict['embedding']=['MobileBERT'] # only consider those models with MobileBert structure, modify this list to consider other structures, likes filter_dict['embedding']=['MobileBert','RoBERTa']
 
     rst_dict = trim_gt(gt_dict, filter_dict)
-    draw_roc('scratch', rst_dict, suffix='rst')
+    draw_roc('scratch', rst_dict, suffix='linear_replace_rst')
 
 
 

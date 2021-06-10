@@ -11,9 +11,11 @@ source_dataset=['conll2003','bbn-pcet','ontonotes-5.0']
 home = os.environ['HOME']
 contest_round = 'round7-train-dataset'
 folder_root = os.path.join(home,'data/'+contest_round)
+#change folder_root to where the round7-train-dataset is according to your path, likes below
+#folder_root = '/home/tdteach/data/round7-train-dataset'
 gt_path = os.path.join(folder_root, 'METADATA.csv')
-row_filter={'poisoned':'True',
-            'embedding':['MobileBERT'],
+row_filter={'poisoned':None, # None, for considering both benign and poisoned models. 'poisoned':True, for considering only poisoned models
+            'embedding':['MobileBERT'], #only consider those models with MobileBERT structure, modify this list to consider other structures, likes 'embedding':['BERT','RoBERTa'],    DO NOT FORGET THE COMMA BEHIND!!!
             'model_architecture':None,
             'source_dataset':None,
             'triggers_0_trigger_executor_name':None}
@@ -135,9 +137,9 @@ for k,md_name in enumerate(dirs):
     continue
 
 
-  #if k>20: continue
+  #if k<35: continue
 
-  #if not md_name == 'id-00000173':
+  #if not md_name == 'id-00000184':
   #  continue
 
 
@@ -178,6 +180,6 @@ for k,md_name in enumerate(dirs):
   print(cmmd)
   os.system(cmmd)
 
-  break
+  #break
 
 

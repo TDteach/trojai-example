@@ -80,8 +80,14 @@ def _deal_rst_data(data):
     return max(max_acc, max_ch_acc)
 
 def _deal_linear_replace_rst_data(data):
-    avg_acc, layer_acc=data['avg_acc'], data['layer_acc']
-    return avg_acc
+    _, layer_acc=data['avg_acc'], data['layer_acc']
+    fet_list=list()
+    for acc_list in layer_acc:
+        avg_acc = np.mean(acc_list)
+        min_acc = np.min(acc_list)
+        fet_list.append([avg_acc,min_acc])
+    fet_list = np.asarray(fet_list)
+    return fet_list
 
 
 def deal_data(data):
@@ -164,46 +170,29 @@ def draw_roc(out_dir, gt_dict,suffix):
   for md_name in rst_dict:
     print(md_name)
     fn_list.append(md_name)
-    lb_list.append(rst_dict[md_name]['label'])
-    sc_list.append(deal_data(rst_dict[md_name]['data']))
+    data=deal_data(rst_dict[md_name]['data'])
+    if len(data.shape) > 1:
+        nn=len(data)
+        ll=np.ones([nn])*rst_dict[md_name]['label']
+        sc_list.append(data)
+        lb_list.append(ll)
+    else:
+        sc_list.append(data)
+        lb_list.append(rst_dict[md_name]['label'])
 
-  lb_list = np.asarray(lb_list)
-  sc_list = np.asarray(sc_list)
+  if len(sc_list[0].shape) > 1:
+    sc_list=np.concatenate(sc_list,axis=0)
+    lb_list=np.concatenate(lb_list,axis=0)
+  else:
+    lb_list = np.asarray(lb_list)
+    sc_list = np.asarray(sc_list)
 
+
+  '''
   from sklearn.metrics import roc_curve, auc
   import matplotlib.pyplot as plt
 
   print('total positive:', sum(lb_list))
-
-  '''
-  gt_pos = 0
-  gt_neg = 0
-  f_neg = 0
-  f_pos = 0
-  fneg_list = list()
-  fpos_list = list()
-  my_thr = 0.5
-  for fn,x,y in zip(fn_list,lb_list,sc_list):
-    num = int(fn.split('-')[1])
-    if x > 0.5:
-      gt_pos += 1
-    else:
-      gt_neg += 1
-
-    if x > 0 and y < my_thr:
-      f_neg += 1
-      print(fn, (x,y))
-      fneg_list.append(num)
-    if x == 0 and y > my_thr:
-      f_pos += 1
-      print(fn, (x,y))
-      fpos_list.append(num)
-  print(gt_pos, gt_neg)
-  print('false negative rate (cover rate)', f_neg/gt_pos)
-  print(fneg_list)
-  print('false positive rate', f_pos/gt_neg)
-  print(fpos_list)
-  '''
 
 
   TP_counts, FP_counts, FN_counts, TN_counts, TPR, FPR, thresholds = gen_confusion_matrix(lb_list, sc_list)
@@ -220,31 +209,22 @@ def draw_roc(out_dir, gt_dict,suffix):
         min_rr_tpr = t
         min_rr_fpr = f
   print('min error: ({},{},{})'.format(min_rr, min_rr_fpr, min_rr_tpr))
-
-
   '''
-  plt.figure()
-  plt.plot(FPR,TPR)
-  plt.show()
-  exit(0)
-  #'''
-
 
   from sklearn.linear_model import LogisticRegression
 
   LR_model=LogisticRegression(fit_intercept=True, tol=1e-5, max_iter=10000)
   sc_list=np.asarray(sc_list)
   lb_list=np.asarray(lb_list)
-  sc_list=np.expand_dims(sc_list,axis=-1)
-  lb_list=np.expand_dims(lb_list,axis=-1)
+  #sc_list=np.expand_dims(sc_list,axis=-1)
+  #lb_list=np.expand_dims(lb_list,axis=-1)
+  print(sc_list.shape)
+  print(lb_list.shape)
   LR_model.fit(sc_list, lb_list)
   tr_acc=LR_model.score(sc_list, lb_list)
   print(tr_acc)
-
   exit(0)
 
-  #for fn,lb,sc in zip(fn_list,lb_list,sc_list):
-  #  print(fn,lb,sc)
 
   tpr, fpr, thr = roc_curve(lb_list,sc_list)
   #print(fpr)

@@ -493,24 +493,19 @@ def forward_without_softmax_roberta(
 
 
 def test_acc(data, tokenizer, max_input_length, clf_model, device, use_amp, target_preds=None):
-    rst=dict()
+    preds_dict=dict()
     acc_list=list()
     for key in data:
         ori_words=data[key]['words']
         ori_labels=data[key]['labels']
         preds=deal_one_sentence(ori_words, ori_labels, tokenizer, max_input_length, clf_model, device, use_amp)
-        rst[key]=preds
+        preds_dict[key]=preds
         if target_preds is not None:
             target=target_preds[key]
             acc=np.sum(target==preds)/len(target)
             acc_list.append(acc)
 
-    if len(acc_list) > 0:
-        acc_list=np.asarray(acc_list)
-        avg_acc=np.mean(acc_list)
-    else:
-        avg_acc=0
-    return avg_acc, rst
+    return acc_list, preds_dict
     
 
 
@@ -661,6 +656,7 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     avg_acc, store_rst = replace_softmax(data, tokenizer, max_input_length, model_filepath, device, use_amp)
 
     utils.save_pkl_results(store_rst, 'linear_replace_rst')
+    exit(0)
 
     #trojan_probability = np.random.rand()
     trojan_probability = avg_acc

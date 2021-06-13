@@ -18,7 +18,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import utils
-RELEASE=True
+RELEASE=False
 
 # Adapted from: https://github.com/huggingface/transformers/blob/2d27900b5d74a84b4c6b95950fd26c9d794b2d57/examples/pytorch/token-classification/run_ner.py#L318
 # Create labels list to match tokenization, only the first sub-word of a tokenized word is used in prediction
@@ -26,28 +26,35 @@ RELEASE=True
 # -100 is the ignore_index for the loss function (https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)
 # Note, this requires 'fast' tokenization
 def tokenize_and_align_labels(tokenizer, original_words, original_labels, max_input_length):
+    batch_size=len(original_words)
+
+    # change padding param to keep  the same length.
     tokenized_inputs = tokenizer(original_words, padding=True, truncation=True, is_split_into_words=True, max_length=max_input_length)
-    labels = []
-    label_mask = []
-    
-    word_ids = tokenized_inputs.word_ids()
-    previous_word_idx = None
-    
-    for word_idx in word_ids:
-        if word_idx is not None:
-            cur_label = original_labels[word_idx]
-        if word_idx is None:
-            labels.append(-100)
-            label_mask.append(0)
-        elif word_idx != previous_word_idx:
-            labels.append(cur_label)
-            label_mask.append(1)
-        else:
-            labels.append(-100)
-            label_mask.append(0)
-        previous_word_idx = word_idx
+  
+    list_labels=list() 
+    list_label_mask=list()
+    for k in range(batch_size):
+        labels = []
+        label_mask = []
+        word_ids = tokenized_inputs.word_ids(batch_index=k)
+        previous_word_idx = None
+        for word_idx in word_ids:
+            if word_idx is not None:
+                cur_label = original_labels[k][word_idx]
+            if word_idx is None:
+                labels.append(-100)
+                label_mask.append(0)
+            elif word_idx != previous_word_idx:
+                labels.append(cur_label)
+                label_mask.append(1)
+            else:
+                labels.append(-100)
+                label_mask.append(0)
+            previous_word_idx = word_idx
+        list_labels.append(labels)
+        list_label_mask.append(label_mask)
         
-    return tokenized_inputs['input_ids'], tokenized_inputs['attention_mask'], labels, label_mask
+    return tokenized_inputs['input_ids'], tokenized_inputs['attention_mask'], list_labels, list_label_mask
 
 # Alternate method for tokenization that does not require 'fast' tokenizer (all of our tokenizers for this round have fast though)
 # Create labels list to match tokenization, only the first sub-word of a tokenized word is used in prediction
@@ -107,24 +114,51 @@ trigger_idx=None
 trigger_len=None
 g_record=dict()
 g_att_loc=list()
+g_n_layers=None
 def get_record_hook(i):
     def hook(model, inputs, outputs):
         h_state=outputs[0].detach().cpu().numpy()
         if i not in g_record: g_record[i]=list()
-        for loc in g_att_loc:
-            g_record[i].append(h_state[0][loc])
-        '''
-        if i==0:
-            print(g_att_loc, trigger_idx, trigger_len)
-            l=trigger_idx
-            r=trigger_idx+trigger_len
-            outputs[0][:,l:r,:]=0
-            return outputs
-        #'''
+        g_record[i].append(h_state)
     return hook
 
 import transformers
-def inves_model(model):
+def add_record_hook(model):
+    hook_list=list()
+    chi=model.children()
+    for ch in chi:
+        na = type(ch).__name__.lower()
+        if 'model' not in na: continue
+       
+        hook_list=list()
+        if hasattr(ch,'encoder'):
+            layer_list=ch.encoder.layer
+        else:
+            layer_list=ch.transformer.layer #for distilBERT
+        global g_n_layers
+        g_n_layers=len(layer_list)
+        for i,layer_module in enumerate(layer_list):
+            hook=layer_module.register_forward_hook(get_record_hook(i))
+            hook_list.append(hook)
+
+    return hook
+
+def get_modify_hook(i):
+    def hook(model, inputs, outputs):
+        device=outputs[0].device
+        global g_record
+        n_state=g_record[i][0].copy()
+        del g_record[i][0]
+        state_tensor=torch.from_numpy(n_state).to(device)
+        suffix=list(outputs[1:])
+        new_outputs=[state_tensor]+suffix
+        new_outputs=tuple(new_outputs)
+        return new_outputs
+    return hook
+
+
+def add_modify_hook(model, select_layer=None):
+    hook_list=list()
     chi=model.children()
     for ch in chi:
         na = type(ch).__name__.lower()
@@ -136,9 +170,12 @@ def inves_model(model):
         else:
             layer_list=ch.transformer.layer #for distilBERT
         for i,layer_module in enumerate(layer_list):
-            hook=layer_module.register_forward_hook(get_record_hook(i))
+            if select_layer is not None and i!=select_layer : continue
+            hook=layer_module.register_forward_hook(get_modify_hook(i))
+            hook_list.append(hook)
 
         break
+
 
 
 import random
@@ -299,9 +336,10 @@ def transfer_to_tensor(input_ids, attention_mask, labels, device):
     attention_mask = attention_mask.to(device)
     labels_tensor = labels_tensor.to(device)
 
-    input_ids = torch.unsqueeze(input_ids, axis=0)
-    attention_mask = torch.unsqueeze(attention_mask, axis=0)
-    labels_tensor = torch.unsqueeze(labels_tensor, axis=0)
+    if len(input_ids.shape) < 2:
+        input_ids = torch.unsqueeze(input_ids, axis=0)
+        attention_mask = torch.unsqueeze(attention_mask, axis=0)
+        labels_tensor = torch.unsqueeze(labels_tensor, axis=0)
 
     return input_ids, attention_mask, labels_tensor
 
@@ -312,6 +350,16 @@ def insert_blank(input_ids, attention_mask, labels, idx):
     labels = labels[:idx]+[0,0]+labels[idx:]
     return input_ids, attention_mask, labels
 
+
+def test_on_data(data, tokenizer, max_input_length, classification_model, device):
+    acc_list=list()
+    for fn in data:
+        ori_words=data[fn]['words']
+        ori_labels=data[fn]['labels']
+        acc=deal_one_sentence(ori_words, ori_labels, tokenizer, max_input_length, classification_model, device)
+        acc_list.append(acc)
+    acc_list=np.asarray(acc_list)
+    return np.mean(acc_list), acc_list
 
 
 def RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes):
@@ -333,22 +381,47 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         return input_ids, attention_mask, labels_tensor, idx, original_words, original_labels
 
 
-    def _bag_extended(_fns, sss, ttt, num_select, method='word'):
-        _sel_fns=random.sample(_fns, num_select)
-        #_sel_fns=_fns[:num_select]
-        _sel_data=list()
-        for fn in _sel_fns:
-            input_ids, attention_mask, labels_tensor,idx,ori_words,ori_labels = _get_extended(data[fn], sss, ttt, method)
+    def _bag_extended(_fns, sss, ttt, method='word'):
 
-            one_data={'input_ids':input_ids,
-                      'attention_mask':attention_mask,
-                      'labels_tensor':labels_tensor,
-                      'idx':idx,
-                      'ori_words':ori_words,
-                      'ori_labels':ori_labels,
-                      } 
-            _sel_data.append(one_data)
-        return _sel_data
+        list_ori_words=list()
+        list_ori_labels=list()
+        for fn in _fns:
+            ori_words=data[fn]['words']
+            ori_labels=data[fn]['labels']
+            list_ori_words.append(ori_words)
+            list_ori_labels.append(ori_labels)
+
+        input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(tokenizer, list_ori_words, list_ori_labels, max_input_length)
+
+        list_idx=list()
+        list_ipt=list()
+        list_atm=list()
+        list_lab=list()
+        for ipt, atm, lab in zip(input_ids, attention_mask, labels):
+            lloc=find_label_location(lab)
+            idx = random.choice(lloc[sss])
+
+            ipt, atm, lab = insert_blank(ipt, atm, lab, idx)
+            if method=='character':
+                lab[idx+1]=ttt
+                lab[idx+2]=ttt+1
+            else:
+                lab[idx+2]=ttt
+
+            list_ipt.append(ipt)
+            list_atm.append(atm)
+            list_lab.append(lab)
+            list_idx.append(idx)  
+        list_ipt=np.asarray(list_ipt)
+        list_atm=np.asarray(list_atm)
+        list_lab=np.asarray(list_lab)
+        list_idx=np.asarray(list_idx)
+        tensor_ipt, tensor_atm, tensor_lab = transfer_to_tensor(list_ipt, list_atm, list_lab, device)
+
+        tensor_data={'tensor_ipt':tensor_ipt, 'tensor_atm':tensor_atm, 'tensor_lab':tensor_lab}
+        ori_data={'ori_words':list_ori_words, 'ori_labels':list_ori_labels}
+
+        return tensor_data, list_idx, ori_data
 
 
     rst=dict()
@@ -362,106 +435,50 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
 
         if len(s_fns) <= 2: continue
 
-        num_select=min(len(s_fns)//2,max(len(s_fns)//4, 5))
-        num_select=2
+        num_select=min(50, len(s_fns))
+        num_select=len(s_fns)//2
+
+        _temp=s_fns.copy()
+        random.shuffle(_temp)
+        tr_fns=_temp[:num_select]
+        te_fns=_temp[num_select:]
 
         for t in range(1,num_classes,2):
             if s==t: continue
 
             #if s!=7 or t!=3: continue
 
-            method='word' 
-            sel_data = _bag_extended(s_fns, s,t, num_select=num_select, method=method)
+            for method in ['character','word']:
+                tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
 
-            print('s_t', s,t)
-            delta, flip_step=classification_model.reverse_engineering(sel_data, max_steps=50)
-            if flip_step is None: 
-                rst[(s,t)]={'flip_step':None,'acc':0}
-            else:
-                print('flip_step:',flip_step,s,t)
-       
-                correct, total=0,0
-                for _fn in s_fns:
-                    input_ids, attention_mask, labels_tensor, idx, _, _ = _get_extended(data[_fn],s,t, method=method)
-                    loss, preds=classification_model.forward_delta(input_ids, attention_mask, labels_tensor, idx, delta)
+                print('s_t', s,t)
+                delta =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=50)
 
-                    ct=torch.sum(labels_tensor[0,idx:idx+3]==preds[0,idx:idx+3])
+                te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+                loss, preds=classification_model.forward_delta(te_tensor_data, te_list_idx, delta)
+           
+                total, correct = 0, 0 
+                labels=te_tensor_data['tensor_lab']
+                for k,idx in enumerate(te_list_idx):
+                    ct=torch.sum(labels[k,idx:idx+3]==preds[k,idx:idx+3])
                     correct+=ct.detach().cpu().numpy()
                     total+=3
                 acc=correct/total
-                print(s,t,'acc:',acc)
+                print(method, s,t,'acc:',acc)
                 print('-------------------------')
-                rst[(s,t)]={'flip_step':flip_step,'acc':acc}
+                rst[(s,t)]={'acc':acc}
 
-            #-------------------
-
-            method='character'
-            sel_data = _bag_extended(s_fns, s,t, num_select=num_select, method=method)
-
-            print('ch s_t', s,t)
-            delta, flip_step=classification_model.reverse_engineering(sel_data, max_steps=25)
-            if flip_step is None: 
-                ch_rst[(s,t)]={'flip_step':None,'acc':0}
-            else:
-                print('flip_step:',flip_step,s,t)
-       
-                correct, total=0,0
-                for _fn in s_fns:
-                    input_ids, attention_mask, labels_tensor, idx, _, _ = _get_extended(data[_fn],s,t,method=method)
-                    loss, preds=classification_model.forward_delta(input_ids, attention_mask, labels_tensor, idx, delta)
-
-                    ct=torch.sum(labels_tensor[0,idx:idx+3]==preds[0,idx:idx+3])
-                    correct+=ct.detach().cpu().numpy()
-                    total+=3
-                acc=correct/total
-                print(s,t,'ch acc:',acc)
-                print('-------------------------')
-                ch_rst[(s,t)]={'flip_step':flip_step,'acc':acc}
-
-
-    return rst, ch_rst
+    exit(0)
+    return rst, None
     
 
 
 
-def deal_one_sentence(original_words, original_labels, tokenizer, max_input_length, classification_model, device, use_amp, trigger_info=None, att_idx=None):
+def deal_one_sentence(original_words, original_labels, tokenizer, max_input_length, classification_model, device, use_amp=False, print_out=False):
         # Select your preference for tokenization
         input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(tokenizer, original_words, original_labels, max_input_length)
         #input_ids, attention_mask, labels, labels_mask = manual_tokenize_and_align_labels(tokenizer, original_words, original_labels, max_input_length)
 
-        #print(labels)
-
-        if att_idx is not None:
-            global g_att_loc,trigger_idx,trigger_len
-            g_att_loc=list()
-            z,c = 0,-1
-            llmap=dict()
-            for i,l in enumerate(labels):
-                if l>=0: 
-                    c+=1
-                    llmap[c]=i
-            llmap[c+1]=len(labels)
-            for c in att_idx:
-                i=llmap[c]
-                if trigger_info['type']=='character' and trigger_info['content'] in original_words[c]:
-                    g_att_loc.append(i+1)
-                else:
-                    g_att_loc.append(i)
-            if trigger_idx is not None:
-                #trigger_idx+=1
-                trigger_len-=1
-                trigger_len=llmap[trigger_idx+trigger_len]-llmap[trigger_idx]
-                trigger_idx=llmap[trigger_idx]
-
-            #print('after tokenization g_att_loc:', g_att_loc)
-
-        '''
-        print(original_words)
-        print(input_ids)
-        print(labels)
-        print(g_att_loc)
-        #'''
-        
         input_ids = torch.as_tensor(input_ids)
         attention_mask = torch.as_tensor(attention_mask)
         labels_tensor = torch.as_tensor(labels)
@@ -497,12 +514,16 @@ def deal_one_sentence(original_words, original_labels, tokenizer, max_input_leng
                 n_total += 1
                 n_correct += preds[i] == labels[i]
 
-        print(original_labels)
-        print('Predictions: {} from Text: "{}"'.format(predicted_labels, original_words))
         assert len(predicted_labels) == len(original_words)
         # print('  logits: {}'.format(numpy_logits))
 
-        print('----------',n_correct/n_total)
+        acc=n_correct/n_total
+        if print_out:
+            print(original_labels)
+            print('Predictions: {} from Text: "{}"'.format(predicted_labels, original_words))
+            print('--------------acc',acc)
+
+        return acc
 
 
 def select_words_in_class_k(labels, k):
@@ -533,32 +554,31 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     if 'data_filepath' in config.keys():
         print('Source dataset filepath = "{}"'.format(config['data_filepath']))
 
-    '''
-    model_dir, fold = os.path.split(model_dirpath)
-    #p_dirpath=os.path.join(model_dir, 'id-00000000')
-    p_dirpath=model_dirpath
-    with open(os.path.join(p_dirpath, 'config.json')) as json_file:
-        p_config = json.load(json_file)
-
-    class_mapping=p_config['class_mapping']
-    num_classes=int(p_config['number_classes'])
-    triggers_info=p_config['triggers']
-    trigger_info=None
-    if triggers_info is not None:
-        t0=triggers_info[0]
-        for k,v in class_mapping.items():
-            if v==t0['source_class_label']: slb=int(k)*2+1
-            if v==t0['target_class_label']: tlb=int(k)*2+1
-        trigger_info={'s_t':(slb,tlb), 'content':None}
-        trigger_info['type']=t0['trigger_executor_name']
-        if t0['trigger_executor_name']=='phrase':
-            trigger_info['content']=t0['trigger_executor']['trigger_text_list']
-        else:
-            trigger_info['content']=t0['trigger_executor']['trigger_text']
-        gg=t0['trigger_executor']['global_trigger']
-        trigger_info['global']=gg
-        print(trigger_info)
-    #'''
+    if not RELEASE:
+        model_dir, fold = os.path.split(model_dirpath)
+        #p_dirpath=os.path.join(model_dir, 'id-00000000')
+        p_dirpath=model_dirpath
+        with open(os.path.join(p_dirpath, 'config.json')) as json_file:
+            p_config = json.load(json_file)
+    
+        class_mapping=p_config['class_mapping']
+        num_classes=int(p_config['number_classes'])
+        triggers_info=p_config['triggers']
+        trigger_info=None
+        if triggers_info is not None:
+            t0=triggers_info[0]
+            for k,v in class_mapping.items():
+                if v==t0['source_class_label']: slb=int(k)*2+1
+                if v==t0['target_class_label']: tlb=int(k)*2+1
+            trigger_info={'s_t':(slb,tlb), 'content':None}
+            trigger_info['type']=t0['trigger_executor_name']
+            if t0['trigger_executor_name']=='phrase':
+                trigger_info['content']=t0['trigger_executor']['trigger_text_list']
+            else:
+                trigger_info['content']=t0['trigger_executor']['trigger_text']
+            gg=t0['trigger_executor']['global_trigger']
+            trigger_info['global']=gg
+            print(trigger_info)
 
     # Load the provided tokenizer
     # TODO: Should use this for evaluation server
@@ -587,9 +607,6 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     # Note, example logit values (in the release datasets) were computed without AMP (i.e. in FP32)
     # Note, should NOT use_amp when operating with MobileBERT
 
-    # load the classification model and move it to the GPU
-    classification_model = torch.load(model_filepath, map_location=torch.device(device))
-    inves_model(classification_model)
 
     # Inference the example images in data
     fns = [os.path.join(examples_dirpath, fn) for fn in os.listdir(examples_dirpath) if fn.endswith('.txt')]
@@ -623,8 +640,10 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
         num_classes=max(num_classes, max(labels))
     num_classes+=1
 
+    # load the classification model and move it to the GPU
+    classification_model = torch.load(model_filepath, map_location=torch.device(device))
 
-    rst, ch_rst=RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
+    rst, ch_rs=RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
 
     store_rst={'rst':rst,'ch_rst':ch_rst}
     utils.save_pkl_results(store_rst, 'rst')

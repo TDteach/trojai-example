@@ -15,7 +15,7 @@ gt_path = os.path.join(folder_root, 'METADATA.csv')
 row_filter={'poisoned':'True',
             'embedding':['MobileBERT'],
             'model_architecture':None,
-            'source_dataset':None,
+            'source_dataset':['conll2003'],
             'triggers_0_trigger_executor_name':None}
 
 
@@ -135,7 +135,7 @@ for k,md_name in enumerate(dirs):
     continue
 
 
-  #if k>20: continue
+  #if k>2: continue
 
   #if not md_name == 'id-00000173':
   #  continue
@@ -167,8 +167,9 @@ for k,md_name in enumerate(dirs):
 
   poisoned=data_dict[md_name]['poisoned']
   md_archi=data_dict[md_name]['model_architecture']
+  source_dataset=data_dict[md_name]['source_dataset']
   print('folder ',k+1)
-  print(md_name, 'poisoned:', poisoned, 'embedding:', embedding,'model_architecture:',md_archi)
+  print(md_name, 'poisoned:', poisoned, 'embedding:', embedding,'model_architecture:',md_archi, 'source_dataset', source_dataset)
 
 
   # run_script='singularity run --nv ./example_trojan_detector.simg'

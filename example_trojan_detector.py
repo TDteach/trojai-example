@@ -13,12 +13,13 @@ import advertorch.context
 import transformers
 import json
 import csv
+import time
 
 import warnings
 warnings.filterwarnings("ignore")
 
 import utils
-RELEASE=False
+RELEASE=True
 
 # Adapted from: https://github.com/huggingface/transformers/blob/2d27900b5d74a84b4c6b95950fd26c9d794b2d57/examples/pytorch/token-classification/run_ner.py#L318
 # Create labels list to match tokenization, only the first sub-word of a tokenized word is used in prediction
@@ -424,52 +425,109 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         return tensor_data, list_idx, ori_data
 
 
-    rst=dict()
-    ch_rst=dict()
-    for s in range(1,num_classes,2):
-        s_fns=list()
-        for fn in data: 
-            labels=data[fn]['labels']
-            if s not in labels: continue
-            s_fns.append(fn)
-
-        if len(s_fns) <= 2: continue
-
-        num_select=min(50, len(s_fns))
-        num_select=len(s_fns)//2
-
-        _temp=s_fns.copy()
-        random.shuffle(_temp)
-        tr_fns=_temp[:num_select]
-        te_fns=_temp[num_select:]
-
+    def _try_method(method):
+      candi=dict()
+      for s in range(1,num_classes,2):
         for t in range(1,num_classes,2):
-            if s==t: continue
-
+            if s==t : continue
             #if s!=7 or t!=3: continue
 
-            for method in ['character','word']:
-                tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+            s_fns=list()
+            for fn in data: 
+                labels=data[fn]['labels']
+                if s not in labels: continue
+                s_fns.append(fn)
+            if len(s_fns) <= 2: continue
 
-                print('s_t', s,t)
-                delta =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=50)
+            num_select=min(50, len(s_fns))
+            num_select=len(s_fns)//2
 
-                te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
-                loss, preds=classification_model.forward_delta(te_tensor_data, te_list_idx, delta)
-           
-                total, correct = 0, 0 
-                labels=te_tensor_data['tensor_lab']
-                for k,idx in enumerate(te_list_idx):
-                    ct=torch.sum(labels[k,idx:idx+3]==preds[k,idx:idx+3])
-                    correct+=ct.detach().cpu().numpy()
-                    total+=3
-                acc=correct/total
-                print(method, s,t,'acc:',acc)
-                print('-------------------------')
-                rst[(s,t)]={'acc':acc}
+            _temp=s_fns.copy()
+            random.shuffle(_temp)
+            tr_fns=_temp[:num_select]
+            te_fns=_temp[num_select:]
 
-    exit(0)
-    return rst, None
+            candi[(s,t,method)]={'tr_fns':tr_fns, 'te_fns':te_fns}
+            #candi[(s,t,'word')]={'tr_fns':tr_fns, 'te_fns':te_fns}
+
+
+      start_time=time.time()
+      while len(candi)>1:
+        for key in candi:
+            s,t,method=key
+
+            tr_fns=candi[key]['tr_fns']
+            tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+
+            delta=None
+            if 'delta' in candi[key]: delta=candi[key]['delta']
+        
+            delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=5, avg_delta=delta)
+
+            #print(s,t,list_loss)
+
+            candi[key]['delta']=delta
+            candi[key]['list_loss']=list_loss
+
+        sorted_keys = list(candi.keys())
+        sorted_keys.sort(key=lambda k: min(candi[k]['list_loss']) )
+
+        keep_ratio=0.75
+        n=len(sorted_keys)
+        keep_n=int(n*keep_ratio)
+        for k,key in enumerate(sorted_keys):
+            if k < keep_n: continue
+            candi.pop(key)
+
+      end_time=time.time()
+      print('------------reduce----------', end_time-start_time)
+
+      start_time=time.time()
+      for key in candi:
+        s,t,method=key
+
+        tr_fns=candi[key]['tr_fns']
+        tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+
+        delta=candi[key]['delta']
+        delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=25, avg_delta=delta)
+
+        #print(s,t,list_loss)
+
+        candi[key]['delta']=delta
+        candi[key]['list_loss']=list_loss
+
+      end_time=time.time()
+      print('------------fine tune----------', end_time-start_time)
+
+      start_time=time.time()
+      for key in candi:
+        s,t,method=key
+
+        te_fns=candi[key]['te_fns']
+        te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+
+        delta=candi[key]['delta']
+        list_loss, last_logits =classification_model.forward_delta(te_tensor_data, te_list_idx, delta=delta)
+
+        labels=te_tensor_data['tensor_lab'].detach().cpu().numpy()
+        preds=np.argmax(last_logits, axis=-1)
+        ct, tt=0, 0
+        for idx, pred, lb in zip(te_list_idx, preds, labels):
+            ct+=np.sum(pred[idx:idx+3]==lb[idx:idx+3])
+            tt+=3
+
+        acc=ct/tt
+        print(s,t,method,'acc',acc)
+      end_time=time.time() 
+      print('------------test----------', end_time-start_time)
+      return acc 
+     
+
+    acc_ch = _try_method('character')
+    acc_wd = _try_method('word')
+    
+    return max(acc_ch, acc_wd)
     
 
 
@@ -643,31 +701,17 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     # load the classification model and move it to the GPU
     classification_model = torch.load(model_filepath, map_location=torch.device(device))
 
-    rst, ch_rs=RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
+    acc =RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
 
-    store_rst={'rst':rst,'ch_rst':ch_rst}
+    store_rst={'acc':acc}
     utils.save_pkl_results(store_rst, 'rst')
 
-
-    best_acc, best_key=0, None
-    best_ch_acc, best_ch_key=0,None
-    for key in rst:
-        acc=rst[key]['acc']
-        if acc > best_acc:
-            best_acc=acc
-            best_key=key
-        acc=ch_rst[key]['acc']
-        if acc>best_ch_acc:
-            best_ch_acc=acc
-            best_ch_key=key
-    print('best key', best_key, 'best acc', best_acc, 'best ch key', best_ch_key, 'best ch acc',best_ch_acc)
-
     # Test scratch space
-    with open(os.path.join(scratch_dirpath, 'test.txt'), 'w') as fh:
-        fh.write('this is a test')
+    # with open(os.path.join(scratch_dirpath, 'test.txt'), 'w') as fh:
+    #    fh.write('this is a test')
 
     #trojan_probability = np.random.rand()
-    trojan_probability = max(best_acc, best_ch_acc)
+    trojan_probability = acc
     print('Trojan Probability: {}'.format(trojan_probability))
 
     with open(result_filepath, 'w') as fh:

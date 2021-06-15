@@ -12,10 +12,10 @@ home = os.environ['HOME']
 contest_round = 'round7-train-dataset'
 folder_root = os.path.join(home,'data/'+contest_round)
 gt_path = os.path.join(folder_root, 'METADATA.csv')
-row_filter={'poisoned':'True',
-            'embedding':['MobileBERT'],
+row_filter={'poisoned':None,
+            'embedding':['RoBERTa'],
             'model_architecture':None,
-            'source_dataset':['conll2003'],
+            'source_dataset':None,
             'triggers_0_trigger_executor_name':None}
 
 

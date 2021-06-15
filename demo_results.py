@@ -72,6 +72,9 @@ def trim_gt(gt_dict, t_dict):
 
 
 def _deal_rst_data(data):
+    acc = data['acc']
+    return acc
+
     rst, ch_rst=data['rst'], data['ch_rst']
     max_acc, max_ch_acc=0,0
     for key in rst:
@@ -157,6 +160,9 @@ def draw_roc(out_dir, gt_dict,suffix):
   sc_list = list()
   fn_list = list()
   for md_name in rst_dict:
+    if md_name=='id-00000182' : continue
+    print(md_name)
+
     fn_list.append(md_name)
     lb_list.append(rst_dict[md_name]['label'])
     sc_list.append(deal_data(rst_dict[md_name]['data']))
@@ -254,7 +260,7 @@ if __name__ == '__main__':
     filter_dict=dict()
     #filter_dict['model_architecture']=['GruLinear','LstmLinear']
     #filter_dict['model_architecture']=['FCLinear']
-    #filter_dict['embedding']=['GPT-2']
+    filter_dict['embedding']=['MobileBERT']
 
     rst_dict = trim_gt(gt_dict, filter_dict)
     draw_roc('scratch', rst_dict, suffix='rst')

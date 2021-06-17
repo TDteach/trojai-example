@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import utils
-RELEASE=True
+RELEASE=False
 
 # Adapted from: https://github.com/huggingface/transformers/blob/2d27900b5d74a84b4c6b95950fd26c9d794b2d57/examples/pytorch/token-classification/run_ner.py#L318
 # Create labels list to match tokenization, only the first sub-word of a tokenized word is used in prediction
@@ -370,6 +370,8 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(tokenizer, original_words, original_labels, max_input_length)
         lloc=find_label_location(labels)
         idx = random.choice(lloc[ss])
+        l=1
+        while idx+l<len(labels) and labels[idx+l]==labels[idx]+1: l+=1
 
         input_ids, attention_mask, labels = insert_blank(input_ids, attention_mask, labels, idx)
         #if method is not None:
@@ -378,11 +380,13 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             labels[idx+2]=tt+1
         else:
             labels[idx+2]=tt
+        for i in range(1,l): labels[idx+2+i]=tt+1
+        
         input_ids, attention_mask, labels_tensor = transfer_to_tensor(input_ids, attention_mask, labels, device)
-        return input_ids, attention_mask, labels_tensor, idx, original_words, original_labels
+        return input_ids, attention_mask, labels_tensor, (idx,l), original_words, original_labels
 
 
-    def _bag_extended(_fns, sss, ttt, method='word'):
+    def _bag_extended(_fns, sss, ttt, method='word', g_trigger=False):
 
         list_ori_words=list()
         list_ori_labels=list()
@@ -401,6 +405,8 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         for ipt, atm, lab in zip(input_ids, attention_mask, labels):
             lloc=find_label_location(lab)
             idx = random.choice(lloc[sss])
+            l=1
+            while idx+l<len(lab) and lab[idx+l]==lab[idx]+1:  l+=1
 
             ipt, atm, lab = insert_blank(ipt, atm, lab, idx)
             if method=='character':
@@ -408,15 +414,22 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
                 lab[idx+2]=ttt+1
             else:
                 lab[idx+2]=ttt
+            for i in range(1,l): lab[idx+2+i]=ttt+1
+            
+            if g_trigger:
+                lloc=find_label_location(lab)
+                if sss in lloc: 
+                    for i in lloc[sss]: lab[i]=ttt
+                if sss+1 in lloc: 
+                    for i in lloc[sss+1]: lab[i]=ttt+1
 
             list_ipt.append(ipt)
             list_atm.append(atm)
             list_lab.append(lab)
-            list_idx.append(idx)  
+            list_idx.append((idx,l))  
         list_ipt=np.asarray(list_ipt)
         list_atm=np.asarray(list_atm)
         list_lab=np.asarray(list_lab)
-        list_idx=np.asarray(list_idx)
         tensor_ipt, tensor_atm, tensor_lab = transfer_to_tensor(list_ipt, list_atm, list_lab, device)
 
         tensor_data={'tensor_ipt':tensor_ipt, 'tensor_atm':tensor_atm, 'tensor_lab':tensor_lab}
@@ -425,12 +438,11 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         return tensor_data, list_idx, ori_data
 
 
-    def _try_method(method):
+    def _try_method(method, g_trigger):
       candi=dict()
       for s in range(1,num_classes,2):
         for t in range(1,num_classes,2):
             if s==t : continue
-            #if s!=7 or t!=3: continue
 
             s_fns=list()
             for fn in data: 
@@ -457,7 +469,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             s,t,method=key
 
             tr_fns=candi[key]['tr_fns']
-            tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+            tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
             delta=None
             if 'delta' in candi[key]: delta=candi[key]['delta']
@@ -483,51 +495,94 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
       print('------------reduce----------', end_time-start_time)
 
       start_time=time.time()
+
       for key in candi:
-        s,t,method=key
+        delta_dim=100000
+        while True:
+          s,t,method=key
+          #print(key)
 
-        tr_fns=candi[key]['tr_fns']
-        tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+          tr_fns=candi[key]['tr_fns']
+          tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
-        delta=candi[key]['delta']
-        delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=25, avg_delta=delta)
+          delta=candi[key]['delta']
+          delta_mask=None
+          if 'delta_mask' in candi[key]: delta_mask=candi[key]['delta_mask']
+          delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=25, avg_delta=delta, delta_mask=delta_mask)
 
-        #print(s,t,list_loss)
+          candi[key]['delta']=delta
+          candi[key]['list_loss']=list_loss
+          if 'delta_mask' not in candi[key]: delta_dim=delta.shape[-1]
 
-        candi[key]['delta']=delta
-        candi[key]['list_loss']=list_loss
+          #print(delta_dim)
+          '''
+          sorted_delta=np.sort(delta)
+          print(sorted_delta[0][-10:])
+          print(sorted_delta[1][-10:])
+          #'''
 
+          if delta_dim > 2:
+              delta_dim//=3
+              #delta_dim=3
+              delta_order=np.argsort(delta)
+              delta_mask=np.zeros_like(delta, dtype=np.int32)
+              for k in range(len(delta)):
+                  order=delta_order[k] 
+                  delta_mask[k][order[-delta_dim:]]=1
+                  delta_mask[k][order[:delta_dim]]=0
+              delta_mask=np.sum(delta_mask,axis=0)
+              candi[key]['delta_mask']=delta_mask
+          else:
+              break      
+              
       end_time=time.time()
       print('------------fine tune----------', end_time-start_time)
+
+      sorted_delta=np.sort(delta)
+      print(np.sum(sorted_delta>0.5))
+      print(sorted_delta[:,-5:])
+      print(delta.shape)
 
       start_time=time.time()
       for key in candi:
         s,t,method=key
+        print(key)
 
         te_fns=candi[key]['te_fns']
-        te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method)
+        te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
         delta=candi[key]['delta']
-        list_loss, last_logits =classification_model.forward_delta(te_tensor_data, te_list_idx, delta=delta)
+        delta_mask=candi[key]['delta_mask']
+        list_loss, last_logits =classification_model.forward_delta(te_tensor_data, te_list_idx, delta=delta, delta_mask=delta_mask)
 
         labels=te_tensor_data['tensor_lab'].detach().cpu().numpy()
         preds=np.argmax(last_logits, axis=-1)
         ct, tt=0, 0
-        for idx, pred, lb in zip(te_list_idx, preds, labels):
-            ct+=np.sum(pred[idx:idx+3]==lb[idx:idx+3])
-            tt+=3
+        for idx_tuple, pred, lb in zip(te_list_idx, preds, labels):
+            idx,l=idx_tuple
+            ct+=np.sum(pred[idx:idx+2+l]==lb[idx:idx+2+l])
+            tt+=2+l
 
         acc=ct/tt
-        print(s,t,method,'acc',acc)
+        candi[key]['global']=g_trigger
+        candi[key]['acc']=acc
+        print(s,t,method,'global:',g_trigger,'acc',acc)
       end_time=time.time() 
       print('------------test----------', end_time-start_time)
-      return acc 
+
+      return acc,candi
      
 
-    acc_ch = _try_method('character')
-    acc_wd = _try_method('word')
+    acc_list=list()
+    rst_dict=dict()
+    param_list=[['character',False],['character',True],['word',False],['word',True]]
+    for param in param_list:
+        acc, _dict = _try_method(*param)
+        tuple_param=tuple(param)
+        rst_dict[tuple_param]=_dict
+        acc_list.append(acc)
     
-    return max(acc_ch, acc_wd)
+    return max(acc_list), rst_dict
     
 
 
@@ -692,18 +747,14 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
         data[na]={'words':original_words, 'labels':original_labels}
 
 
-    num_classes=0
-    for na in data:
-        labels=data[na]['labels']
-        num_classes=max(num_classes, max(labels))
-    num_classes+=1
 
     # load the classification model and move it to the GPU
     classification_model = torch.load(model_filepath, map_location=torch.device(device))
+    num_classes=classification_model.num_labels
 
-    acc =RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
+    acc, rst_dict =RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
 
-    store_rst={'acc':acc}
+    store_rst={'acc':acc, 'rst_dict':rst_dict}
     utils.save_pkl_results(store_rst, 'rst')
 
     # Test scratch space

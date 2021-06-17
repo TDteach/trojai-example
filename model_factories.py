@@ -27,15 +27,17 @@ class NerLinearModel(torch.nn.Module):
         active_logits = emissions.view(-1, self.num_labels)
         active_labels = torch.where(active_loss, labels.view(-1), torch.tensor(self.loss_fct.ignore_index).type_as(labels))
 
+        list_idx=None
         if list_idx is not None:
           loss=None
-          l=emissions.shape[1]
-          for k,idx in enumerate(list_idx):
-            st=k*l+idx
+          once=emissions.shape[1]
+          for k,idx_tuple in enumerate(list_idx):
+            idx,l=idx_tuple
+            st=k*once+idx
             if loss is None:
-              loss = self.loss_fct(active_logits[st:st+3], active_labels[st:st+3])
+              loss = self.loss_fct(active_logits[st:st+2+l], active_labels[st:st+2+l])
             else:
-              loss += self.loss_fct(active_logits[st:st+3], active_labels[st:st+3])
+              loss += self.loss_fct(active_logits[st:st+2+l], active_labels[st:st+2+l])
           
         else:
           loss = self.loss_fct(active_logits, active_labels)
@@ -52,7 +54,7 @@ class NerLinearModel(torch.nn.Module):
     return self._forward(sequence_output, attention_mask, labels)
 
 
-  def reverse_engineering(self, tensor_data, list_idx, max_steps=50, avg_delta=None):
+  def reverse_engineering(self, tensor_data, list_idx, max_steps=50, avg_delta=None, delta_mask=None):
     model_name=type(self.transformer).__name__
     model_name=model_name.lower()
     if not hasattr(self.transformer, 'reverse_trigger'):
@@ -69,15 +71,15 @@ class NerLinearModel(torch.nn.Module):
     attention_mask=tensor_data['tensor_atm']
     labels=tensor_data['tensor_lab']
 
-    avg_delta, list_loss, last_logits = self.transformer.reverse_trigger(input_ids, attention_mask=attention_mask, labels=labels, model=self, list_idx=list_idx, max_steps=max_steps, init_delta=avg_delta)
+    avg_delta, list_loss, last_logits = self.transformer.reverse_trigger(input_ids, attention_mask=attention_mask, labels=labels, model=self, list_idx=list_idx, max_steps=max_steps, init_delta=avg_delta, delta_mask=delta_mask)
 
     return avg_delta, list_loss
 
-  def forward_delta(self, tensor_data, list_idx, delta):
+  def forward_delta(self, tensor_data, list_idx, delta, delta_mask):
     input_ids=tensor_data['tensor_ipt']
     attention_mask=tensor_data['tensor_atm']
     labels=tensor_data['tensor_lab']
-    _, list_loss, last_logits = self.transformer.reverse_trigger(input_ids, attention_mask=attention_mask, labels=labels, model=self, list_idx=list_idx, max_steps=None, init_delta=delta)
+    _, list_loss, last_logits = self.transformer.reverse_trigger(input_ids, attention_mask=attention_mask, labels=labels, model=self, list_idx=list_idx, max_steps=None, init_delta=delta, delta_mask=delta_mask)
 
     preds=np.argmax(last_logits, axis=-1)
     return list_loss, last_logits
@@ -101,6 +103,7 @@ def reverse_trigger_mobilebert(
         list_idx=None,
         max_steps=None,
         init_delta=None,
+        delta_mask=None,
     ):
         #print('xxxxxxxxx MobileBERT')
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -145,6 +148,13 @@ def reverse_trigger_mobilebert(
         else:
             zero_delta=init_delta.copy()
 
+        if delta_mask is not None:
+            sel_idx=(delta_mask>0)
+            weight_cut=weight[sel_idx,:]
+            zero_delta=zero_delta[:,sel_idx]
+        else:
+            weight_cut=weight
+
         only_forward=False
         if max_steps is not None:
             delta=Variable(torch.from_numpy(zero_delta), requires_grad=True)
@@ -179,12 +189,15 @@ def reverse_trigger_mobilebert(
         for step in range(max_steps):
             delta_tensor=delta.to(device)
             soft_delta=F.softmax(delta_tensor,dtype=torch.float32, dim=-1)
+            extra_embeds=torch.matmul(soft_delta, weight_cut)
      
-            for k,idx in enumerate(list_idx):
-                y[k,idx:idx+2,:]=0
-                y[k,idx:idx+2,:]+=soft_delta
             inputs_embeds=torch.matmul(y,weight)
+            for k,idx_tuple in enumerate(list_idx):
+                idx,l=idx_tuple
+                inputs_embeds[k,idx:idx+2,:]=0
+                inputs_embeds[k,idx:idx+2,:]+=extra_embeds
             loss, logits=__forward(inputs_embeds)
+
             list_loss.append(loss.detach().cpu().numpy())
 
             if only_forward:
@@ -194,15 +207,13 @@ def reverse_trigger_mobilebert(
             loss.backward(retain_graph=True)
             opt.step()
 
-            '''
-            print('step',step, 'loss', loss)
-            print(torch.sum(torch.abs(delta.grad)))
-            for k,idx in enumerate(list_idx):
-              print(preds[k,idx:idx+3], labels[k,idx:idx+3])
-            print('-----------')
-            '''
+        delta_v=delta.detach().cpu().numpy()
+        if delta_mask is not None:
+            zero_delta=np.ones([2,tot_tokens],dtype=np.float32)*-20
+            zero_delta[:,sel_idx]=delta_v
+            delta_v=zero_delta
 
-        return delta.detach().cpu().numpy(), list_loss, logits.detach().cpu().numpy()
+        return delta_v, list_loss, logits.detach().cpu().numpy()
 
 def reverse_trigger_distilbert(
         self,
@@ -218,6 +229,7 @@ def reverse_trigger_distilbert(
         list_idx=None,
         max_steps=None,
         init_delta=None,
+        delta_mask=None,
     ):
         #print('xxxxxxxxx   DistilBERT')
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -255,6 +267,13 @@ def reverse_trigger_distilbert(
         else:
             zero_delta=init_delta.copy()
 
+        if delta_mask is not None:
+            sel_idx=(delta_mask>0)
+            weight_cut=weight[sel_idx,:]
+            zero_delta=zero_delta[:,sel_idx]
+        else:
+            weight_cut=weight
+
         only_forward=False
         if max_steps is not None:
             delta=Variable(torch.from_numpy(zero_delta), requires_grad=True)
@@ -289,17 +308,23 @@ def reverse_trigger_distilbert(
             loss, emissions = model._forward(sequence_output, attention_mask, labels, list_idx)
             return loss, emissions
 
+        if delta_mask is not None: 
+            delta_mask=torch.from_numpy(delta_mask)
+
         list_loss=list()
         if only_forward: max_steps=1
         for step in range(max_steps):
             delta_tensor=delta.to(device)
             soft_delta=F.softmax(delta_tensor,dtype=torch.float32, dim=-1)
-
-            for k,idx in enumerate(list_idx):
-                y[k,idx:idx+2,:]=0
-                y[k,idx:idx+2,:]+=soft_delta
+            extra_embeds=torch.matmul(soft_delta, weight_cut)
+     
             inputs_embeds=torch.matmul(y,weight)
+            for k,idx_tuple in enumerate(list_idx):
+                idx,l=idx_tuple
+                inputs_embeds[k,idx:idx+2,:]=0
+                inputs_embeds[k,idx:idx+2,:]+=extra_embeds
             loss, logits=__forward(inputs_embeds)
+
             list_loss.append(loss.detach().cpu().numpy())
 
             if only_forward:
@@ -309,7 +334,13 @@ def reverse_trigger_distilbert(
             loss.backward(retain_graph=True)
             opt.step()
        
-        return delta.detach().cpu().numpy(), list_loss, logits.detach().cpu().numpy()
+        delta_v=delta.detach().cpu().numpy()
+        if delta_mask is not None:
+            zero_delta=np.ones([2,tot_tokens],dtype=np.float32)*-20
+            zero_delta[:,sel_idx]=delta_v
+            delta_v=zero_delta
+
+        return delta_v, list_loss, logits.detach().cpu().numpy()
 
 def reverse_trigger_roberta(
         self,
@@ -331,6 +362,7 @@ def reverse_trigger_roberta(
         list_idx=None,
         max_steps=None,
         init_delta=None,
+        delta_mask=None,
     ):
         #print('xxxxxxxxx RoBERTaModel')
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -394,6 +426,12 @@ def reverse_trigger_roberta(
         else:
             zero_delta=init_delta.copy()
 
+        if delta_mask is not None:
+            sel_idx=(delta_mask>0)
+            weight_cut=weight[sel_idx,:]
+            zero_delta=zero_delta[:,sel_idx]
+        else:
+            weight_cut=weight
 
         only_forward=False
         if max_steps is not None:
@@ -432,11 +470,15 @@ def reverse_trigger_roberta(
         for step in range(max_steps):
             delta_tensor=delta.to(device)
             soft_delta=F.softmax(delta_tensor,dtype=torch.float32, dim=-1)
-            for k,idx in enumerate(list_idx):
-                y[k,idx:idx+2:]=0
-                y[k,idx:idx+2:]+=soft_delta
+            extra_embeds=torch.matmul(soft_delta, weight_cut)
+     
             inputs_embeds=torch.matmul(y,weight)
+            for k,idx_tuple in enumerate(list_idx):
+                idx,l=idx_tuple
+                inputs_embeds[k,idx:idx+2,:]=0
+                inputs_embeds[k,idx:idx+2,:]+=extra_embeds
             loss, logits=__forward(inputs_embeds)
+
             list_loss.append(loss.detach().cpu().numpy())
 
             if only_forward:
@@ -446,7 +488,13 @@ def reverse_trigger_roberta(
             loss.backward(retain_graph=True)
             opt.step()
 
-        return delta.detach().cpu().numpy(), list_loss, logits.detach().cpu().numpy()
+        delta_v=delta.detach().cpu().numpy()
+        if delta_mask is not None:
+            zero_delta=np.ones([2,tot_tokens],dtype=np.float32)*-20
+            zero_delta[:,sel_idx]=delta_v
+            delta_v=zero_delta
+
+        return delta_v, list_loss, logits.detach().cpu().numpy()
 
 def reverse_trigger_bert(
         self,
@@ -468,6 +516,7 @@ def reverse_trigger_bert(
         list_idx=None,
         max_steps=None,
         init_delta=None,
+        delta_mask=None,
     ):
         #print('xxxxxxxxx RoBERTaModel')
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -531,6 +580,13 @@ def reverse_trigger_bert(
         else:
             zero_delta=init_delta.copy()
 
+        if delta_mask is not None:
+            sel_idx=(delta_mask>0)
+            weight_cut=weight[sel_idx,:]
+            zero_delta=zero_delta[:,sel_idx]
+        else:
+            weight_cut=weight
+
         only_forward=False
         if max_steps is not None:
             delta=Variable(torch.from_numpy(zero_delta), requires_grad=True)
@@ -568,12 +624,15 @@ def reverse_trigger_bert(
         for step in range(max_steps):
             delta_tensor=delta.to(device)
             soft_delta=F.softmax(delta_tensor,dtype=torch.float32, dim=-1)
-
-            for k,idx in enumerate(list_idx):
-                y[k,idx:idx+2,:]=0
-                y[k,idx:idx+2,:]+=soft_delta
+            extra_embeds=torch.matmul(soft_delta, weight_cut)
+     
             inputs_embeds=torch.matmul(y,weight)
+            for k,idx_tuple in enumerate(list_idx):
+                idx,l=idx_tuple
+                inputs_embeds[k,idx:idx+2,:]=0
+                inputs_embeds[k,idx:idx+2,:]+=extra_embeds
             loss, logits=__forward(inputs_embeds)
+
             list_loss.append(loss.detach().cpu().numpy())
 
             if only_forward:
@@ -583,5 +642,11 @@ def reverse_trigger_bert(
             loss.backward(retain_graph=True)
             opt.step()
 
-        return delta.detach().cpu().numpy(), list_loss, logits.detach().cpu().numpy()
- 
+        delta_v=delta.detach().cpu().numpy()
+        if delta_mask is not None:
+            zero_delta=np.ones([2,tot_tokens],dtype=np.float32)*-20
+            zero_delta[:,sel_idx]=delta_v
+            delta_v=zero_delta
+
+        return delta_v, list_loss, logits.detach().cpu().numpy()
+

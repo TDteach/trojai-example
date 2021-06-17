@@ -260,7 +260,7 @@ if __name__ == '__main__':
     filter_dict=dict()
     #filter_dict['model_architecture']=['GruLinear','LstmLinear']
     #filter_dict['model_architecture']=['FCLinear']
-    filter_dict['embedding']=['MobileBERT']
+    filter_dict['embedding']=['DistilBERT']
 
     rst_dict = trim_gt(gt_dict, filter_dict)
     draw_roc('scratch', rst_dict, suffix='rst')

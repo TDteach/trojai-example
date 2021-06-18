@@ -13,7 +13,7 @@ contest_round = 'round7-train-dataset'
 folder_root = os.path.join(home,'data/'+contest_round)
 gt_path = os.path.join(folder_root, 'METADATA.csv')
 row_filter={'poisoned':None,
-            'embedding':['BERT','MobileBERT','RoBERTa'],
+            'embedding':['MobileBERT'],
             'model_architecture':None,
             'source_dataset':None,
             'triggers_0_trigger_executor_name':None}
@@ -135,9 +135,9 @@ for k,md_name in enumerate(dirs):
     continue
 
 
-  #if k>2: continue
+  if k<10: continue
 
-  #if not md_name == 'id-00000049':
+  #if not md_name == 'id-00000105':
   #  continue
 
 

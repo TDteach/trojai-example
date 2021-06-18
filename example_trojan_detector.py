@@ -20,6 +20,10 @@ warnings.filterwarnings("ignore")
 
 import utils
 RELEASE=False
+if RELEASE:
+  ALLCH='/all_ch.pkl'
+else:
+  ALLCH='./all_ch.pkl'
 
 # Adapted from: https://github.com/huggingface/transformers/blob/2d27900b5d74a84b4c6b95950fd26c9d794b2d57/examples/pytorch/token-classification/run_ner.py#L318
 # Create labels list to match tokenization, only the first sub-word of a tokenized word is used in prediction
@@ -364,35 +368,14 @@ def test_on_data(data, tokenizer, max_input_length, classification_model, device
 
 
 def RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes):
-    def _get_extended(_data, ss, tt, method='word'):
-        original_words=_data['words']
-        original_labels=_data['labels']
-        input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(tokenizer, original_words, original_labels, max_input_length)
-        lloc=find_label_location(labels)
-        idx = random.choice(lloc[ss])
-        l=1
-        while idx+l<len(labels) and labels[idx+l]==labels[idx]+1: l+=1
-
-        input_ids, attention_mask, labels = insert_blank(input_ids, attention_mask, labels, idx)
-        #if method is not None:
-        if method=='character':
-            labels[idx+1]=tt
-            labels[idx+2]=tt+1
-        else:
-            labels[idx+2]=tt
-        for i in range(1,l): labels[idx+2+i]=tt+1
-        
-        input_ids, attention_mask, labels_tensor = transfer_to_tensor(input_ids, attention_mask, labels, device)
-        return input_ids, attention_mask, labels_tensor, (idx,l), original_words, original_labels
-
 
     def _bag_extended(_fns, sss, ttt, method='word', g_trigger=False):
 
         list_ori_words=list()
         list_ori_labels=list()
         for fn in _fns:
-            ori_words=data[fn]['words']
-            ori_labels=data[fn]['labels']
+            ori_words=data[fn]['words'].copy()
+            ori_labels=data[fn]['labels'].copy()
             list_ori_words.append(ori_words)
             list_ori_labels.append(ori_labels)
 
@@ -402,26 +385,37 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         list_ipt=list()
         list_atm=list()
         list_lab=list()
+        list_test_idx=list()
         for ipt, atm, lab in zip(input_ids, attention_mask, labels):
             lloc=find_label_location(lab)
             idx = random.choice(lloc[sss])
             l=1
-            while idx+l<len(lab) and lab[idx+l]==lab[idx]+1:  l+=1
+            while idx+l<len(lab) and (lab[idx+l]==lab[idx]+1 or lab[idx+l] < 0):  l+=1
 
             ipt, atm, lab = insert_blank(ipt, atm, lab, idx)
             if method=='character':
                 lab[idx+1]=ttt
                 lab[idx+2]=ttt+1
             else:
+                lab[idx+1]=-100
                 lab[idx+2]=ttt
-            for i in range(1,l): lab[idx+2+i]=ttt+1
+            for i in range(1,l): 
+              if lab[idx+2+i] >= 0: lab[idx+2+i]=ttt+1
             
+            _temp=list()
+            for i in range(idx,idx+2+l):
+                if lab[i] >= 0: _temp.append(i)
             if g_trigger:
                 lloc=find_label_location(lab)
                 if sss in lloc: 
                     for i in lloc[sss]: lab[i]=ttt
+                    _temp.extend(lloc[sss])
                 if sss+1 in lloc: 
                     for i in lloc[sss+1]: lab[i]=ttt+1
+                    _temp.extend(lloc[sss+1])
+                _temp.sort()
+
+            list_test_idx.append(_temp)
 
             list_ipt.append(ipt)
             list_atm.append(atm)
@@ -435,7 +429,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         tensor_data={'tensor_ipt':tensor_ipt, 'tensor_atm':tensor_atm, 'tensor_lab':tensor_lab}
         ori_data={'ori_words':list_ori_words, 'ori_labels':list_ori_labels}
 
-        return tensor_data, list_idx, ori_data
+        return tensor_data, list_idx, ori_data, list_test_idx
 
 
     def _try_method(method, g_trigger):
@@ -469,7 +463,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             s,t,method=key
 
             tr_fns=candi[key]['tr_fns']
-            tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+            tr_tensor_data, tr_list_idx, _, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
             delta=None
             if 'delta' in candi[key]: delta=candi[key]['delta']
@@ -491,6 +485,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             if k < keep_n: continue
             candi.pop(key)
 
+      print(candi.keys())
       end_time=time.time()
       print('------------reduce----------', end_time-start_time)
 
@@ -503,7 +498,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
           #print(key)
 
           tr_fns=candi[key]['tr_fns']
-          tr_tensor_data, tr_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+          tr_tensor_data, tr_list_idx, _, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
           delta=candi[key]['delta']
           delta_mask=None
@@ -521,8 +516,9 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
           print(sorted_delta[1][-10:])
           #'''
 
-          if delta_dim > 2:
+          if delta_dim > 1:
               delta_dim//=3
+              delta_dim=max(delta_dim,1)
               #delta_dim=3
               delta_order=np.argsort(delta)
               delta_mask=np.zeros_like(delta, dtype=np.int32)
@@ -549,7 +545,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         print(key)
 
         te_fns=candi[key]['te_fns']
-        te_tensor_data, te_list_idx, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+        te_tensor_data, te_list_idx, _, te_test_idx = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
 
         delta=candi[key]['delta']
         delta_mask=candi[key]['delta_mask']
@@ -558,10 +554,13 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         labels=te_tensor_data['tensor_lab'].detach().cpu().numpy()
         preds=np.argmax(last_logits, axis=-1)
         ct, tt=0, 0
-        for idx_tuple, pred, lb in zip(te_list_idx, preds, labels):
-            idx,l=idx_tuple
-            ct+=np.sum(pred[idx:idx+2+l]==lb[idx:idx+2+l])
-            tt+=2+l
+        for indice, pred, lb in zip(te_test_idx, preds, labels):
+            indice=np.asarray(indice)
+            pred=np.asarray(pred)
+            lb=np.asarray(lb)
+            dt=np.sum(pred[indice]==lb[indice])
+            ct+=dt
+            tt+=len(indice)
 
         acc=ct/tt
         candi[key]['global']=g_trigger
@@ -570,13 +569,124 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
       end_time=time.time() 
       print('------------test----------', end_time-start_time)
 
-      return acc,candi
+
+      best_acc=-1
+      best_key=None
+      for key in candi:
+        acc=candi[key]['acc']
+        if acc > best_acc:
+          best_acc=acc
+          best_key=key
+      return best_acc,candi
      
+    def _try_character():
+
+      start_time=time.time()
+      import pickle
+      with open(ALLCH,'rb') as fh:
+        allch_list=pickle.load(fh)
+
+      candi=dict()
+      for s in range(1,num_classes,2):
+        for t in range(1,num_classes,2):
+            if s==t : continue
+
+            s_fns=list()
+            for fn in data: 
+                labels=data[fn]['labels']
+                if s not in labels: continue
+                s_fns.append(fn)
+            if len(s_fns) <= 2: continue
+
+            candi[(s,t,'character')]={'te_fns':s_fns,'acc':-1}
+
+
+      for ch in allch_list:
+        s_check=np.zeros(num_classes,dtype=np.int32)
+        for key in candi:
+            s,t,method=key
+            te_fns=candi[key]['te_fns']
+            if s_check[s] > 0: continue
+            s_check[s]=1
+
+            list_wrds=list()
+            list_labs=list()
+            list_idx=list()
+            for fn in te_fns:
+              wrd=data[fn]['words'].copy()
+              lab=data[fn]['labels'].copy()
+
+              lloc=find_label_location(lab)
+              idx = random.choice(lloc[s])
+   
+              wrd[idx]=ch+wrd[idx]
+
+              list_idx.append(idx)
+              list_wrds.append(wrd)
+              list_labs.append(lab)
+
+            list_ipt, list_atm, list_lab, labels_mask = tokenize_and_align_labels(tokenizer, list_wrds, list_labs, max_input_length)
+
+            up_list_idx=list()
+            for idx, lb, ori_lb in zip(list_idx, list_lab, list_labs):
+              llmap=find_label_mapping(lb)
+              idx=llmap[idx]
+              up_list_idx.append(idx)
+
+            tensor_ipt, tensor_atm, tensor_lab = transfer_to_tensor(list_ipt, list_atm, list_lab, device)
+
+            tensor_data={'tensor_ipt':tensor_ipt, 'tensor_atm':tensor_atm, 'tensor_lab':tensor_lab}
+            ori_data={'ori_words':list_wrds, 'ori_labels':list_labs}
+
+            loss, logits =classification_model.forward(tensor_ipt, tensor_atm, tensor_lab)
+
+            preds=np.argmax(logits, axis=-1)
+            pred_list=list()
+            for idx, pred in zip(up_list_idx, preds): 
+              pred_list.append(pred[idx])
+            pred_list=np.asarray(pred_list)
+            unique, counts = np.unique(pred_list, return_counts=True)
+
+            for t,c in zip(unique, counts):
+              if t%2==0: continue
+              if t==s: continue
+              acc=c/len(pred_list)
+              key=(s,t,method)
+              candi[key]['global']='False'
+              if acc > candi[key]['acc']:
+                candi[key]['acc']=acc
+                candi[key]['character']=ch
+
+      best_acc=-1
+      best_key=None
+      for key in candi:
+        acc=candi[key]['acc']
+        if acc > best_acc:
+          best_acc=acc
+          best_key=key
+
+      if best_key is None: 
+        best_acc=0
+        print('character',best_key, None, best_acc)
+      else:
+        print('character',best_key, candi[best_key]['character'], best_acc)
+      end_time=time.time()
+      print('------------character----------', end_time-start_time)
+  
+ 
+      return best_acc, candi
+
 
     acc_list=list()
     rst_dict=dict()
-    param_list=[['character',False],['character',True],['word',False],['word',True]]
-    for param in param_list:
+    #'''
+    acc, _dict = _try_character()
+    acc_list.append(acc)
+    rst_dict[('character',False)]=_dict
+    #'''
+    if acc < 0.9 or not RELEASE:
+      param_list=[['word',False],['word',True]]
+      for param in param_list:
         acc, _dict = _try_method(*param)
         tuple_param=tuple(param)
         rst_dict[tuple_param]=_dict

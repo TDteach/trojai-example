@@ -51,7 +51,8 @@ class NerLinearModel(torch.nn.Module):
   def forward(self, input_ids, attention_mask=None, labels=None):
     outputs = self.transformer(input_ids, attention_mask=attention_mask)
     sequence_output = outputs[0]
-    return self._forward(sequence_output, attention_mask, labels)
+    loss, emissions=self._forward(sequence_output, attention_mask, labels)
+    return loss.detach().cpu().numpy(), emissions.detach().cpu().numpy()
 
 
   def reverse_engineering(self, tensor_data, list_idx, max_steps=50, avg_delta=None, delta_mask=None):

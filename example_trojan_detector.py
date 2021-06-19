@@ -681,10 +681,12 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
     rst_dict=dict()
     #'''
     acc, _dict = _try_character()
+    if acc < 0.9: acc/=2
     acc_list.append(acc)
     rst_dict[('character',False)]=_dict
     #'''
-    if acc < 0.9 or not RELEASE:
+    #if acc < 0.9 or not RELEASE:
+    if acc < 0.9:
       param_list=[['word',False],['word',True]]
       for param in param_list:
         acc, _dict = _try_method(*param)

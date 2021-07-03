@@ -11,9 +11,10 @@ source_dataset=['conll2003','bbn-pcet','ontonotes-5.0']
 home = os.environ['HOME']
 contest_round = 'round7-train-dataset'
 folder_root = os.path.join(home,'data/'+contest_round)
+#folder_root = '/data/share/round7-train-dataset'
 gt_path = os.path.join(folder_root, 'METADATA.csv')
 row_filter={'poisoned':None,
-            'embedding':['BERT'],
+            'embedding':['MobileBERT'],
             'model_architecture':None,
             'source_dataset':None,
             'triggers_0_trigger_executor_name':None}
@@ -122,8 +123,6 @@ exit(0)
 dirs = sorted(data_dict.keys())
 for k,md_name in enumerate(dirs):
   name_num=int(md_name.split('-')[1])
-  #if name_num < 10000: continue
-  #if name_num > 10231: continue
 
 
   folder_path=os.path.join(folder_root,'models', md_name)
@@ -135,9 +134,9 @@ for k,md_name in enumerate(dirs):
     continue
 
 
-  #if k<10: continue
+  #if k<40: continue
 
-  #if not md_name == 'id-00000105':
+  #if not md_name == 'id-00000161':
   #  continue
 
 

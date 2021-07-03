@@ -10,6 +10,7 @@ import copy
 import torch
 import advertorch.attacks
 import advertorch.context
+import torch.nn.functional as F
 import transformers
 import json
 import csv
@@ -35,6 +36,7 @@ def tokenize_and_align_labels(tokenizer, original_words, original_labels, max_in
 
     # change padding param to keep  the same length.
     tokenized_inputs = tokenizer(original_words, padding=True, truncation=True, is_split_into_words=True, max_length=max_input_length)
+   
   
     list_labels=list() 
     list_label_mask=list()
@@ -381,6 +383,13 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
 
         input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(tokenizer, list_ori_words, list_ori_labels, max_input_length)
 
+        '''
+        print(list_ori_words[0])
+        print(labels[0])
+        print(input_ids[0])
+        exit(0)
+        '''
+
         list_idx=list()
         list_ipt=list()
         list_atm=list()
@@ -389,16 +398,20 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         for ipt, atm, lab in zip(input_ids, attention_mask, labels):
             lloc=find_label_location(lab)
             idx = random.choice(lloc[sss])
+
             l=1
             while idx+l<len(lab) and (lab[idx+l]==lab[idx]+1 or lab[idx+l] < 0):  l+=1
 
             ipt, atm, lab = insert_blank(ipt, atm, lab, idx)
+            #'''
             if method=='character':
                 lab[idx+1]=ttt
                 lab[idx+2]=ttt+1
             else:
                 lab[idx+1]=-100
                 lab[idx+2]=ttt
+            #'''
+
             for i in range(1,l): 
               if lab[idx+2+i] >= 0: lab[idx+2+i]=ttt+1
             
@@ -426,6 +439,7 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
         list_lab=np.asarray(list_lab)
         tensor_ipt, tensor_atm, tensor_lab = transfer_to_tensor(list_ipt, list_atm, list_lab, device)
 
+
         tensor_data={'tensor_ipt':tensor_ipt, 'tensor_atm':tensor_atm, 'tensor_lab':tensor_lab}
         ori_data={'ori_words':list_ori_words, 'ori_labels':list_ori_labels}
 
@@ -433,19 +447,53 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
 
 
     def _try_method(method, g_trigger):
+      transformer_name=type(classification_model.transformer).__name__.lower()
+
+      print(transformer_name)
+
+      if 'distilbert' in transformer_name:
+        rep_times=2
+        reduce_tgt=2
+        reduce_per_times=15
+        res_dim=2
+        early_cut_thr=0.10
+      elif 'mobilebert' in transformer_name:
+        rep_times=1
+        reduce_tgt=2
+        reduce_per_times=25
+        res_dim=2
+        early_cut_thr=0.15
+      elif 'roberta' in transformer_name:
+        rep_times=2
+        reduce_tgt=2
+        reduce_per_times=15
+        res_dim=2
+        early_cut_thr=0.10
+      else: #BERT
+        rep_times=1
+        reduce_tgt=2
+        reduce_per_times=25
+        res_dim=2
+        early_cut_thr=0.10
+
+      print('rep_times',rep_times)
+      print('reduce_tgt',reduce_tgt)
+      print('reduce_per_times',reduce_per_times)
+      print('res_dim',res_dim)
+      print('early_cut_thr',early_cut_thr)
+
       candi=dict()
       for s in range(1,num_classes,2):
         for t in range(1,num_classes,2):
-            if s==t : continue
+          if s==t : continue
+          s_fns=list()
+          for fn in data: 
+            labels=data[fn]['labels']
+            if s not in labels: continue
+            s_fns.append(fn)
+          if len(s_fns) < 3: continue
 
-            s_fns=list()
-            for fn in data: 
-                labels=data[fn]['labels']
-                if s not in labels: continue
-                s_fns.append(fn)
-            if len(s_fns) <= 2: continue
-
-            num_select=min(50, len(s_fns))
+          for times in range(rep_times):
             num_select=len(s_fns)//2
 
             _temp=s_fns.copy()
@@ -453,12 +501,12 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             tr_fns=_temp[:num_select]
             te_fns=_temp[num_select:]
 
-            candi[(s,t,method)]={'tr_fns':tr_fns, 'te_fns':te_fns}
-            #candi[(s,t,'word')]={'tr_fns':tr_fns, 'te_fns':te_fns}
+            new_method=method+chr(ord('0')+times+1)
+            candi[(s,t,new_method)]={'tr_fns':tr_fns, 'te_fns':te_fns}
 
 
       start_time=time.time()
-      while len(candi)>1:
+      while len(candi)>reduce_tgt:
         for key in candi:
             s,t,method=key
 
@@ -468,15 +516,26 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             delta=None
             if 'delta' in candi[key]: delta=candi[key]['delta']
         
-            delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=5, avg_delta=delta)
-
-            #print(s,t,list_loss)
+            delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=reduce_per_times, avg_delta=delta)
 
             candi[key]['delta']=delta
             candi[key]['list_loss']=list_loss
+            v=list()
+            for z in list_loss[-5:]:
+                v.append(list(z))
+            v=np.asarray(v)
+            mv=np.mean(v,axis=0)
+            candi[key]['sort_value']=tuple(mv)
 
         sorted_keys = list(candi.keys())
-        sorted_keys.sort(key=lambda k: min(candi[k]['list_loss']) )
+        sorted_keys.sort(key=lambda k: candi[k]['sort_value'] )
+
+        #'''
+        aa=list()
+        for key in sorted_keys:
+          aa.append((key[0],key[1],candi[key]['sort_value']))
+        print(aa)
+        #'''
 
         keep_ratio=0.75
         n=len(sorted_keys)
@@ -485,48 +544,143 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
             if k < keep_n: continue
             candi.pop(key)
 
-      print(candi.keys())
+        least_value=candi[sorted_keys[0]]['sort_value']
+
+        print(candi.keys())
       end_time=time.time()
       print('------------reduce----------', end_time-start_time)
 
-      start_time=time.time()
 
+      #'''
+      if least_value[0] > early_cut_thr:
+        print('loss too high', least_value)
+        return 0,candi
+      #'''
+
+      #'''
+      if transformer_name is not None:
+        start_time=time.time()
+        candi_keys=list(candi.keys())
+        for key in candi_keys:
+          s,t,method=key
+          s_fns=candi[key]['tr_fns']+candi[key]['te_fns']
+
+          for times in range(1): 
+            num_select=len(s_fns)//2
+
+            _temp=s_fns.copy()
+            random.shuffle(_temp)
+            tr_fns=_temp[:num_select]
+            te_fns=_temp[num_select:]
+
+            new_method=method+chr(ord('0')+times+1)
+            new_key=(s,t,new_method)
+            candi[new_key]={'tr_fns':tr_fns, 'te_fns':te_fns}
+
+            tr_tensor_data, tr_list_idx, _, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+
+            delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=200, avg_delta=None)
+
+            candi[new_key]['delta']=delta
+            candi[new_key]['list_loss']=list_loss
+            print(new_key, list_loss[-5:])
+
+        end_time=time.time()
+        print('------------multi start----------', end_time-start_time)
+      #'''
+
+      dim_reduc_method='max'
+      #if 'roberta' in transformer_name:
+      #  dim_reduc_method='proj_max'
+      #elif 'bert' in transformer_name:
+      #  dim_reduc_method='proj_max'
+
+      if dim_reduc_method=='proj_max':
+        weight_tensor=classification_model.transformer.embeddings.word_embeddings.weight
+        weight=weight_tensor.detach().cpu().numpy()
+        for i in range(len(weight)):
+          weight[i]/=np.linalg.norm(weight[i])
+        T_weight=np.transpose(weight)
+        T_weight_tensor=torch.from_numpy(T_weight).to(device)
+
+      start_time=time.time()
       for key in candi:
         delta_dim=100000
+        s,t,method=key
+        tr_fns=candi[key]['tr_fns']
+        tr_tensor_data, tr_list_idx, _, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+
+        haid=None
         while True:
-          s,t,method=key
-          #print(key)
-
-          tr_fns=candi[key]['tr_fns']
-          tr_tensor_data, tr_list_idx, _, _ = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
-
           delta=candi[key]['delta']
+         
           delta_mask=None
           if 'delta_mask' in candi[key]: delta_mask=candi[key]['delta_mask']
-          delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=25, avg_delta=delta, delta_mask=delta_mask)
+          delta, list_loss =classification_model.reverse_engineering(tr_tensor_data, tr_list_idx, max_steps=15, avg_delta=delta, delta_mask=delta_mask)
 
           candi[key]['delta']=delta
           candi[key]['list_loss']=list_loss
           if 'delta_mask' not in candi[key]: delta_dim=delta.shape[-1]
-
-          #print(delta_dim)
-          '''
-          sorted_delta=np.sort(delta)
-          print(sorted_delta[0][-10:])
-          print(sorted_delta[1][-10:])
-          #'''
-
-          if delta_dim > 1:
-              delta_dim//=3
+ 
+          if haid is None:
+              haid=np.argmax(delta,axis=-1)[0]
+        
+          if delta_dim > res_dim:
+              if delta_dim > 100 :
+                delta_dim=int(delta_dim/4)
+                #delta_dim=100
+              else:
+                delta_dim=int(delta_dim/3*2)
               delta_dim=max(delta_dim,1)
-              #delta_dim=3
-              delta_order=np.argsort(delta)
-              delta_mask=np.zeros_like(delta, dtype=np.int32)
-              for k in range(len(delta)):
-                  order=delta_order[k] 
+
+              l2loss=list_loss[-1][1]
+              print(l2loss,'--')
+              if abs(l2loss) > 1.99: delta_dim=1
+
+              delta_tensor=torch.from_numpy(delta).to(device)
+              soft_delta=F.softmax(delta_tensor)
+              soft_delta_numpy=soft_delta.detach().cpu().numpy()
+              oo=list()
+              for soft in soft_delta_numpy:
+                so=np.argsort(soft)
+                so=np.flip(so)
+
+                s=0
+                list_o=list()
+                for z in so:
+                  s+=soft[z]
+                  list_o.append(z)
+                  if s > 0.9999: break
+                oo.append(list_o)
+              print(delta_dim)
+              delta_dim=min(delta_dim, max(len(oo[0]),len(oo[1])))
+              print(delta_dim, len(oo[0]), len(oo[1]))
+
+
+              if dim_reduc_method=='proj_max':
+                delta_embeds=torch.matmul(soft_delta, weight_tensor)
+                delta_proj=torch.matmul(delta_embeds, T_weight_tensor)
+                delta_proj_numpy=delta_proj.detach().cpu().numpy()
+                proj_order=np.argsort(delta_proj_numpy)
+              else:
+                proj_order=np.argsort(delta)
+
+              delta_mask=np.zeros_like(proj_order,dtype=np.int32)
+              for k, order in enumerate(proj_order):
                   delta_mask[k][order[-delta_dim:]]=1
-                  delta_mask[k][order[:delta_dim]]=0
+
               delta_mask=np.sum(delta_mask,axis=0)
+
+              '''
+              print(delta_mask.shape, delta[0][haid], delta[1][haid])
+              for i in range(len(delta_mask)):
+                  if proj_order[0][-1-i]==haid: print(0,i,haid)
+              for i in range(len(delta_mask)):
+                  if proj_order[1][-1-i]==haid: print(1,i,haid)
+              if delta_mask[haid]==0:
+                  print(delta_dim)
+                  #exit(0)
+              #'''
               candi[key]['delta_mask']=delta_mask
           else:
               break      
@@ -542,13 +696,13 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
       start_time=time.time()
       for key in candi:
         s,t,method=key
-        print(key)
 
-        te_fns=candi[key]['te_fns']
-        te_tensor_data, te_list_idx, _, te_test_idx = _bag_extended(tr_fns, s,t, method=method, g_trigger=g_trigger)
+        te_fns=candi[key]['tr_fns']
+        te_tensor_data, te_list_idx, _, te_test_idx = _bag_extended(te_fns, s,t, method=method, g_trigger=g_trigger)
 
         delta=candi[key]['delta']
         delta_mask=candi[key]['delta_mask']
+        print(delta_mask)
         list_loss, last_logits =classification_model.forward_delta(te_tensor_data, te_list_idx, delta=delta, delta_mask=delta_mask)
 
         labels=te_tensor_data['tensor_lab'].detach().cpu().numpy()
@@ -679,20 +833,24 @@ def RE_one_class(data, tokenizer, max_input_length, classification_model, device
 
     acc_list=list()
     rst_dict=dict()
+    ch_threshold=0.95
     #'''
     acc, _dict = _try_character()
-    if acc < 0.9: acc/=2
+    if acc < ch_threshold: acc/=2
     acc_list.append(acc)
     rst_dict[('character',False)]=_dict
     #'''
-    #if acc < 0.9 or not RELEASE:
-    if acc < 0.9:
+    #if acc < ch_threshold or not RELEASE:
+    #if True:
+    if acc < ch_threshold:
       param_list=[['word',False],['word',True]]
+      #param_list=[['word',True]]
       for param in param_list:
         acc, _dict = _try_method(*param)
         tuple_param=tuple(param)
         rst_dict[tuple_param]=_dict
         acc_list.append(acc)
+        if acc > ch_threshold: break
     
     return max(acc_list), rst_dict
     
@@ -757,6 +915,25 @@ def select_words_in_class_k(labels, k):
         if l==k: idx_list.append(i)
     if len(idx_list)==0: return None
     return idx_list
+
+
+def final_adjust(sc, cat):
+  if 'mobilebert' in cat:
+    va,vb=1.2730,-0.9095
+  elif 'distilbert' in cat:
+    va,vb=0.7062,-0.5415
+  elif 'roberta'in cat:
+    va,vb=0.2460,-0.2467
+  elif 'bert' in cat:
+    va,vb=0.6372,-0.2774
+  sc=sc*2-1
+  sc=max(sc,-1+1e-6)
+  sc=min(sc,+1-1e-6)
+  sc=np.arctanh(sc)
+  sc=sc*va+vb
+  sc=np.tanh(sc)
+  sc=sc/2+0.5
+  return sc
  
 
 def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath, scratch_dirpath, examples_dirpath):
@@ -863,18 +1040,21 @@ def example_trojan_detector(model_filepath, tokenizer_filepath, result_filepath,
     # load the classification model and move it to the GPU
     classification_model = torch.load(model_filepath, map_location=torch.device(device))
     num_classes=classification_model.num_labels
+    transformer_name=type(classification_model.transformer).__name__.lower()
 
     acc, rst_dict =RE_one_class(data, tokenizer, max_input_length, classification_model, device, num_classes)
 
     store_rst={'acc':acc, 'rst_dict':rst_dict}
-    utils.save_pkl_results(store_rst, 'rst')
+    utils.save_pkl_results(store_rst, 'accelete_rst')
 
     # Test scratch space
     # with open(os.path.join(scratch_dirpath, 'test.txt'), 'w') as fh:
     #    fh.write('this is a test')
 
-    #trojan_probability = np.random.rand()
-    trojan_probability = acc
+    if RELEASE:
+        trojan_probability = final_adjust(acc, transformer_name)
+    else:
+        trojan_probability = acc
     print('Trojan Probability: {}'.format(trojan_probability))
 
     with open(result_filepath, 'w') as fh:

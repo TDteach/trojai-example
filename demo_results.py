@@ -103,12 +103,12 @@ def linear_adjust(lb_list, sc_list):
 
   sc_list=np.asarray(sc_list)
   sc_list=sc_list*2-1
-  sc_list=np.maximum(sc_list,-1+1e-12)
-  sc_list=np.minimum(sc_list,+1-1e-12)
+  sc_list=np.maximum(sc_list,-1+1e-6)
+  sc_list=np.minimum(sc_list,+1-1e-6)
   sc_list=np.arctanh(sc_list)
   sc=torch.from_numpy(sc_list)
 
-  max_step=500
+  max_step=1000
   for step in range(max_step):
     #if step%100==0: print(step)
     cg=torch.tanh(sc*va+vb)
@@ -155,6 +155,7 @@ def draw_roc(out_dir, gt_dict,suffix):
     rst_dict[md_name]=dict()
     rst_dict[md_name]['label']=lb
     rst_dict[md_name]['data']=data_dict
+    rst_dict[md_name]['gt_info']=gt_dict[md_name]
 
   lb_list = list()
   sc_list = list()
@@ -175,35 +176,16 @@ def draw_roc(out_dir, gt_dict,suffix):
 
   print('total positive:', sum(lb_list))
 
-  '''
-  gt_pos = 0
-  gt_neg = 0
-  f_neg = 0
-  f_pos = 0
-  fneg_list = list()
-  fpos_list = list()
-  my_thr = 0.5
-  for fn,x,y in zip(fn_list,lb_list,sc_list):
-    num = int(fn.split('-')[1])
-    if x > 0.5:
-      gt_pos += 1
-    else:
-      gt_neg += 1
 
-    if x > 0 and y < my_thr:
-      f_neg += 1
-      print(fn, (x,y))
-      fneg_list.append(num)
-    if x == 0 and y > my_thr:
-      f_pos += 1
-      print(fn, (x,y))
-      fpos_list.append(num)
-  print(gt_pos, gt_neg)
-  print('false negative rate (cover rate)', f_neg/gt_pos)
-  print(fneg_list)
-  print('false positive rate', f_pos/gt_neg)
-  print(fpos_list)
   '''
+  from example_trojan_detector import final_adjust
+  for k,fn in enumerate(fn_list):
+    gt_info=rst_dict[fn]['gt_info']
+    md_st=gt_info['embedding'].lower()
+    old=sc_list[k]
+    sc_list[k]=final_adjust(old, md_st)
+  #'''
+
 
 
   TP_counts, FP_counts, FN_counts, TN_counts, TPR, FPR, thresholds = gen_confusion_matrix(lb_list, sc_list)
@@ -221,16 +203,6 @@ def draw_roc(out_dir, gt_dict,suffix):
         min_rr_fpr = f
   print('min error: ({},{},{})'.format(min_rr, min_rr_fpr, min_rr_tpr))
 
-
-  '''
-  plt.figure()
-  plt.plot(FPR,TPR)
-  plt.show()
-  exit(0)
-  #'''
-
-  #for fn,lb,sc in zip(fn_list,lb_list,sc_list):
-  #  print(fn,lb,sc)
 
   tpr, fpr, thr = roc_curve(lb_list,sc_list)
   #print(fpr)
@@ -258,12 +230,13 @@ if __name__ == '__main__':
     csv_path = os.path.join(home,'data/round7-train-dataset/METADATA.csv')
     gt_dict = utils.read_gt_csv(csv_path)
     filter_dict=dict()
-    #filter_dict['model_architecture']=['GruLinear','LstmLinear']
-    #filter_dict['model_architecture']=['FCLinear']
-    filter_dict['embedding']=['RoBERTa']
+    #filter_dict['embedding']=['RoBERTa']
+    filter_dict['embedding']=['MobileBERT']
+    #filter_dict['embedding']=['DistilBERT']
+    #filter_dict['embedding']=['BERT']
 
     rst_dict = trim_gt(gt_dict, filter_dict)
-    draw_roc('scratch', rst_dict, suffix='rst')
+    draw_roc('scratch', rst_dict, suffix='accelete_rst')
 
 
 

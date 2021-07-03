@@ -27,20 +27,7 @@ class NerLinearModel(torch.nn.Module):
         active_logits = emissions.view(-1, self.num_labels)
         active_labels = torch.where(active_loss, labels.view(-1), torch.tensor(self.loss_fct.ignore_index).type_as(labels))
 
-        list_idx=None
-        if list_idx is not None:
-          loss=None
-          once=emissions.shape[1]
-          for k,idx_tuple in enumerate(list_idx):
-            idx,l=idx_tuple
-            st=k*once+idx
-            if loss is None:
-              loss = self.loss_fct(active_logits[st:st+2+l], active_labels[st:st+2+l])
-            else:
-              loss += self.loss_fct(active_logits[st:st+2+l], active_labels[st:st+2+l])
-          
-        else:
-          loss = self.loss_fct(active_logits, active_labels)
+        loss = self.loss_fct(active_logits, active_labels)
       else:
         loss = self.loss_fct(emissions.view(-1, self.num_labels), labels.view(-1))
 
@@ -197,9 +184,16 @@ def reverse_trigger_mobilebert(
                 idx,l=idx_tuple
                 inputs_embeds[k,idx:idx+2,:]=0
                 inputs_embeds[k,idx:idx+2,:]+=extra_embeds
-            loss, logits=__forward(inputs_embeds)
+            celoss, logits=__forward(inputs_embeds)
 
-            list_loss.append(loss.detach().cpu().numpy())
+            l2weight=0.05/celoss.data
+            #MobileBERT
+            l2loss=torch.sum(torch.square(soft_delta))
+            #l2loss=torch.sum(torch.max(soft_delta, dim=-1)[0])
+            loss=celoss-l2loss*l2weight
+
+            list_loss.append((celoss.detach().cpu(),  -l2loss.detach().cpu(), )) 
+
 
             if only_forward:
                 return None, list_loss, logits.detach().cpu().numpy()
@@ -324,9 +318,18 @@ def reverse_trigger_distilbert(
                 idx,l=idx_tuple
                 inputs_embeds[k,idx:idx+2,:]=0
                 inputs_embeds[k,idx:idx+2,:]+=extra_embeds
-            loss, logits=__forward(inputs_embeds)
+            celoss, logits=__forward(inputs_embeds)
 
-            list_loss.append(loss.detach().cpu().numpy())
+            l2weight=0.05/celoss.data
+
+            #DistilBERT
+            l2loss=torch.sum(torch.square(soft_delta))
+            #l2loss=torch.sum(torch.max(soft_delta, dim=-1)[0])
+            #l2loss=torch.FloatTensor([0]).to(device)
+            loss=celoss-l2loss*l2weight
+
+            list_loss.append((celoss.detach().cpu(),  -l2loss.detach().cpu(), )) 
+
 
             if only_forward:
                 return None, list_loss, logits.detach().cpu().numpy()
@@ -395,7 +398,12 @@ def reverse_trigger_roberta(
         if attention_mask is None:
             attention_mask = torch.ones(input_shape, device=device)
         if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+            if hasattr(self.embeddings, "token_type_ids"):
+                buffered_token_type_ids = self.embeddings.token_type_ids[:,:seq_length]
+                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(batch_size, seq_length)
+                token_type_ids=buffered_token_type_ids_expanded
+            else:
+                token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
@@ -478,9 +486,24 @@ def reverse_trigger_roberta(
                 idx,l=idx_tuple
                 inputs_embeds[k,idx:idx+2,:]=0
                 inputs_embeds[k,idx:idx+2,:]+=extra_embeds
-            loss, logits=__forward(inputs_embeds)
+            celoss, logits=__forward(inputs_embeds)
 
-            list_loss.append(loss.detach().cpu().numpy())
+            '''
+            preds=torch.argmax(logits, axis=-1)
+            ha_id=(labels>=0)
+            eq_id=(preds==labels)
+            acc_ct=torch.sum(ha_id*eq_id)
+            acc=acc_ct/torch.sum(ha_id)
+            '''
+            l2weight=0.05/celoss.data
+
+            #RoBERTa
+            #l2loss=torch.sum(torch.square(soft_delta))
+            l2loss=torch.sum(torch.max(soft_delta, dim=-1)[0])
+            loss=celoss-l2loss*l2weight
+
+            list_loss.append((celoss.detach().cpu(),  -l2loss.detach().cpu(), )) 
+
 
             if only_forward:
                 return None, list_loss, logits.detach().cpu().numpy()
@@ -519,7 +542,7 @@ def reverse_trigger_bert(
         init_delta=None,
         delta_mask=None,
     ):
-        #print('xxxxxxxxx RoBERTaModel')
+        #print('xxxxxxxxx BERTModel')
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -632,9 +655,16 @@ def reverse_trigger_bert(
                 idx,l=idx_tuple
                 inputs_embeds[k,idx:idx+2,:]=0
                 inputs_embeds[k,idx:idx+2,:]+=extra_embeds
-            loss, logits=__forward(inputs_embeds)
+            celoss, logits=__forward(inputs_embeds)
+ 
+            l2weight=0.05/celoss.data
 
-            list_loss.append(loss.detach().cpu().numpy())
+            #BERT
+            #l2loss=torch.sum(torch.square(soft_delta)) 
+            l2loss=torch.sum(torch.max(soft_delta, dim=-1)[0])
+            loss=celoss-l2weight*l2loss
+
+            list_loss.append((celoss.detach().cpu(),  -l2loss.detach().cpu(), )) 
 
             if only_forward:
                 return None, list_loss, logits.detach().cpu().numpy()
